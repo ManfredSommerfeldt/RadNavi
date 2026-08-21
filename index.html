@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14171a">
+<title>Rad-Navi – GPX-Navigation</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  :root{
+    --asphalt:#14171a;
+    --panel:#1c2024;
+    --panel-raised:#23282c;
+    --sign-yellow:#f2c14e;
+    --route-green:#4f9d69;
+    --warn-red:#e2543f;
+    --text:#eef0ee;
+    --text-dim:#8b938c;
+    --line:#2c3236;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:var(--asphalt);
+    color:var(--text);
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    overflow:hidden;
+  }
+  #app{height:100vh; height:100dvh; display:flex; flex-direction:column;}
+
+  /* --- Top bar --- */
+  #topbar{
+    display:flex; align-items:center; gap:10px;
+    padding:calc(10px + env(safe-area-inset-top)) 14px 10px;
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+    z-index:1000;
+  }
+  #topbar h1{
+    font-size:15px; font-weight:800; letter-spacing:0.04em; text-transform:uppercase;
+    margin:0; color:var(--sign-yellow); white-space:nowrap;
+  }
+  .spacer{flex:1;}
+  .btn{
+    appearance:none; border:none; border-radius:8px;
+    padding:9px 14px; font-size:13px; font-weight:700;
+    letter-spacing:0.02em; cursor:pointer; white-space:nowrap;
+  }
+  .btn-primary{background:var(--sign-yellow); color:#221a06;}
+  .btn-primary:disabled{background:#4a4536; color:#77715c; cursor:not-allowed;}
+  .btn-ghost{background:var(--panel-raised); color:var(--text);}
+  .btn-danger{background:var(--warn-red); color:#2a0a05;}
+  #fileLabel{
+    background:var(--panel-raised); color:var(--text);
+    border:1px dashed var(--line); border-radius:8px;
+    padding:8px 12px; font-size:12.5px; cursor:pointer;
+    max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #fileInput{display:none;}
+
+  /* --- Map --- */
+  #mapWrap{flex:1; position:relative; min-height:0;}
+  #map{position:absolute; inset:0; background:#0f1114;}
+  .leaflet-control-zoom{margin-top:calc(10px + env(safe-area-inset-top)) !important;}
+
+  /* --- Banner (errors / hints) --- */
+  #banner{
+    position:absolute; top:10px; left:10px; right:10px;
+    background:rgba(28,32,36,0.96); border:1px solid var(--warn-red);
+    color:var(--text); padding:10px 12px; border-radius:10px;
+    font-size:13px; line-height:1.4; display:none; z-index:900;
+  }
+  #banner.show{display:block;}
+  #banner strong{color:var(--warn-red);}
+
+  /* --- Floating controls on map --- */
+  #mapControls{
+    position:absolute; right:10px; bottom:12px; z-index:900;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .fab{
+    width:44px; height:44px; border-radius:50%;
+    background:var(--panel-raised); border:1px solid var(--line);
+    color:var(--text); font-size:18px; display:flex; align-items:center; justify-content:center;
+    cursor:pointer;
+  }
+  .fab.active{background:var(--sign-yellow); color:#221a06; border-color:var(--sign-yellow);}
+
+  /* --- User marker --- */
+  .user-dot{
+    width:16px; height:16px; border-radius:50%;
+    background:var(--sign-yellow); border:3px solid #fff;
+    box-shadow:0 0 0 7px rgba(242,193,78,0.28);
+  }
+  .user-arrow{
+    width:0; height:0;
+    border-left:8px solid transparent; border-right:8px solid transparent;
+    border-bottom:16px solid var(--sign-yellow);
+    filter:drop-shadow(0 0 4px rgba(0,0,0,0.5));
+  }
+  .wpt-pin{
+    background:var(--panel-raised); color:var(--sign-yellow);
+    border:2px solid var(--sign-yellow); border-radius:50% 50% 50% 0;
+    width:22px; height:22px; transform:rotate(-45deg);
+    display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800;
+  }
+  .wpt-pin span{transform:rotate(45deg);}
+
+  /* --- Dashboard --- */
+  #dashboard{
+    background:var(--panel); border-top:1px solid var(--line);
+    padding:14px 16px calc(14px + env(safe-area-inset-bottom));
+    display:none; z-index:1000;
+  }
+  #dashboard.show{display:block;}
+  #placeholder{
+    padding:16px; text-align:center; color:var(--text-dim); font-size:13px;
+  }
+  #placeholder.hide{display:none;}
+  .stat-row{display:flex; align-items:flex-end; gap:22px; margin-bottom:10px;}
+  .stat-main .stat-value{font-size:40px; font-weight:800; letter-spacing:-0.01em; line-height:1;}
+  .stat-main .stat-label{font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.06em; margin-top:2px;}
+  .stat-sub{display:flex; flex-direction:column; align-items:flex-start;}
+  .stat-sub .stat-value{font-size:18px; font-weight:700;}
+  .stat-sub .stat-label{font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em;}
+  #compass{
+    margin-left:auto; display:flex; flex-direction:column; align-items:center; gap:2px;
+  }
+  #compassArrow{
+    width:22px; height:22px; transition:transform 0.3s ease;
+    color:var(--route-green);
+  }
+  #compassLabel{font-size:10px; color:var(--text-dim); font-weight:700;}
+
+  #nextWpt{
+    font-size:12.5px; color:var(--text-dim); margin-bottom:10px; min-height:16px;
+  }
+  #nextWpt b{color:var(--text);}
+
+  #offRouteBanner{
+    display:none; background:rgba(226,84,63,0.15); border:1px solid var(--warn-red);
+    color:#ff9a8a; font-size:12.5px; font-weight:700; padding:7px 10px; border-radius:8px;
+    margin-bottom:10px;
+  }
+  #offRouteBanner.show{display:block;}
+
+  /* --- Trail-blaze progress bar (signature element) --- */
+  #trail{position:relative; height:34px;}
+  #trailTrack{
+    position:absolute; top:14px; left:0; right:0; height:6px;
+    background:repeating-linear-gradient(90deg, var(--line) 0 8px, transparent 8px 12px);
+    border-radius:3px;
+  }
+  #trailFill{
+    position:absolute; top:14px; left:0; height:6px;
+    background:var(--route-green); border-radius:3px; width:0%;
+  }
+  .trail-wpt{
+    position:absolute; top:9px; width:2px; height:16px; background:var(--sign-yellow);
+  }
+  #trailRider{
+    position:absolute; top:0px; width:18px; height:18px; margin-left:-9px;
+    background:var(--sign-yellow); border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+    border:2px solid #221a06; left:0%;
+  }
+
+  #startRow{display:flex; gap:10px; margin-top:12px;}
+  #startRow .btn{flex:1;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="topbar">
+    <h1>Rad-Navi</h1>
+    <div class="spacer"></div>
+    <label id="fileLabel" for="fileInput">GPX laden…</label>
+    <input type="file" id="fileInput" accept=".gpx">
+  </div>
+
+  <div id="mapWrap">
+    <div id="map"></div>
+
+    <div id="banner"></div>
+
+    <div id="mapControls">
+      <div class="fab active" id="followBtn" title="Karte folgt Position">◎</div>
+      <div class="fab" id="fitBtn" title="Ganze Route zeigen">⤢</div>
+    </div>
+  </div>
+
+  <div id="dashboard">
+    <div id="placeholder">Lade eine GPX-Datei, um die Route auf der Karte zu sehen.</div>
+
+    <div id="navContent" style="display:none;">
+      <div class="stat-row">
+        <div class="stat-main">
+          <div class="stat-value" id="statRemaining">–</div>
+          <div class="stat-label">Restdistanz</div>
+        </div>
+        <div class="stat-sub">
+          <div class="stat-value" id="statSpeed">–</div>
+          <div class="stat-label">km/h</div>
+        </div>
+        <div id="compass">
+          <svg id="compassArrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 2 L12 22 M12 2 L7 9 M12 2 L17 9" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div id="compassLabel">–</div>
+        </div>
+      </div>
+
+      <div id="offRouteBanner">⚠ Du bist <span id="offRouteDist">–</span> von der Route entfernt</div>
+
+      <div id="nextWpt">&nbsp;</div>
+
+      <div id="trail">
+        <div id="trailTrack"></div>
+        <div id="trailFill"></div>
+        <div id="trailRider"></div>
+      </div>
+    </div>
+
+    <div id="startRow" style="display:none;">
+      <button class="btn btn-primary" id="startBtn">Navigation starten</button>
+      <button class="btn btn-danger" id="stopBtn" style="display:none;">Stopp</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+(function(){
+
+  // ---------- Map setup ----------
+  const map = L.map('map', { zoomControl:false }).setView([51.1657, 10.4515], 6);
+  L.control.zoom({ position:'topright' }).addTo(map);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:19,
+    attribution:'&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  let routeLayer = null;
+  let wptMarkers = [];
+  let trackPoints = [];   // [{lat,lon}]
+  let cumDist = [];       // cumulative meters along track
+  let totalDist = 0;
+  let matchedWpts = [];   // [{name, lat, lon, cumDist}]
+  let userMarker = null;
+  let watchId = null;
+  let followMode = true;
+  let lastFix = null;
+
+  // ---------- Geo helpers ----------
+  const toRad = d => d * Math.PI / 180;
+
+  function haversine(a, b){
+    const R = 6371000;
+    const dLat = toRad(b.lat - a.lat);
+    const dLon = toRad(b.lon - a.lon);
+    const la1 = toRad(a.lat), la2 = toRad(b.lat);
+    const h = Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function bearing(a, b){
+    const la1 = toRad(a.lat), la2 = toRad(b.lat);
+    const dLon = toRad(b.lon - a.lon);
+    const y = Math.sin(dLon) * Math.cos(la2);
+    const x = Math.cos(la1)*Math.sin(la2) - Math.sin(la1)*Math.cos(la2)*Math.cos(dLon);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+
+  function cardinal(deg){
+    const dirs = ['N','NO','O','SO','S','SW','W','NW'];
+    return dirs[Math.round(deg / 45) % 8];
+  }
+
+  // Project point p onto segment a-b (local flat approximation, fine for short segments)
+  function projectOnSegment(p, a, b){
+    const R = 6371000;
+    const lat0 = toRad(a.lat);
+    const toXY = pt => ({
+      x: toRad(pt.lon - a.lon) * Math.cos(lat0) * R,
+      y: toRad(pt.lat - a.lat) * R
+    });
+    const A = {x:0,y:0}, B = toXY(b), P = toXY(p);
+    const ABx = B.x - A.x, ABy = B.y - A.y;
+    const len2 = ABx*ABx + ABy*ABy;
+    let t = len2 === 0 ? 0 : ((P.x-A.x)*ABx + (P.y-A.y)*ABy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cx = A.x + ABx*t, cy = A.y + ABy*t;
+    const dist = Math.sqrt((P.x-cx)**2 + (P.y-cy)**2);
+    return { t, dist };
+  }
+
+  function findNearestOnTrack(p){
+    let best = { segIndex:0, t:0, dist:Infinity };
+    for(let i = 0; i < trackPoints.length - 1; i++){
+      const r = projectOnSegment(p, trackPoints[i], trackPoints[i+1]);
+      if(r.dist < best.dist){
+        best = { segIndex:i, t:r.t, dist:r.dist };
+      }
+    }
+    const traveled = cumDist[best.segIndex] + best.t * (cumDist[best.segIndex+1] - cumDist[best.segIndex]);
+    return { ...best, traveled };
+  }
+
+  function pointAtDistance(dist){
+    // find point on track at given cumulative distance
+    if(dist <= 0) return trackPoints[0];
+    if(dist >= totalDist) return trackPoints[trackPoints.length-1];
+    let i = 0;
+    while(cumDist[i+1] < dist) i++;
+    const segLen = cumDist[i+1] - cumDist[i];
+    const t = segLen === 0 ? 0 : (dist - cumDist[i]) / segLen;
+    const a = trackPoints[i], b = trackPoints[i+1];
+    return { lat: a.lat + (b.lat-a.lat)*t, lon: a.lon + (b.lon-a.lon)*t };
+  }
+
+  function fmtDist(m){
+    if(m < 0) m = 0;
+    return m < 1000 ? Math.round(m) + ' m' : (m/1000).toFixed(m < 10000 ? 2 : 1) + ' km';
+  }
+
+  // ---------- GPX parsing ----------
+  function parseGPX(xmlText){
+    const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
+    if(xml.querySelector('parsererror')) throw new Error('Ungültige GPX-Datei.');
+
+    let pts = Array.from(xml.querySelectorAll('trkpt'));
+    if(pts.length === 0) pts = Array.from(xml.querySelectorAll('rtept'));
+    if(pts.length === 0) throw new Error('Keine Track- oder Routenpunkte in dieser Datei gefunden.');
+
+    const points = pts.map(pt => ({
+      lat: parseFloat(pt.getAttribute('lat')),
+      lon: parseFloat(pt.getAttribute('lon'))
+    }));
+
+    const waypoints = Array.from(xml.querySelectorAll('wpt')).map(pt => {
+      const nameEl = pt.querySelector('name');
+      return {
+        lat: parseFloat(pt.getAttribute('lat')),
+        lon: parseFloat(pt.getAttribute('lon')),
+        name: nameEl ? nameEl.textContent : 'Wegpunkt'
+      };
+    });
+
+    return { points, waypoints };
+  }
+
+  function loadRoute(points, waypoints){
+    trackPoints = points;
+    cumDist = [0];
+    for(let i = 1; i < points.length; i++){
+      cumDist.push(cumDist[i-1] + haversine(points[i-1], points[i]));
+    }
+    totalDist = cumDist[cumDist.length - 1];
+
+    matchedWpts = waypoints.map(w => {
+      let bestIdx = 0, bestDist = Infinity;
+      trackPoints.forEach((p, i) => {
+        const d = haversine(w, p);
+        if(d < bestDist){ bestDist = d; bestIdx = i; }
+      });
+      return { name: w.name, lat: w.lat, lon: w.lon, cumDist: cumDist[bestIdx] };
+    }).sort((a,b) => a.cumDist - b.cumDist);
+
+    // draw on map
+    if(routeLayer) map.removeLayer(routeLayer);
+    wptMarkers.forEach(m => map.removeLayer(m));
+    wptMarkers = [];
+
+    const latlngs = trackPoints.map(p => [p.lat, p.lon]);
+    routeLayer = L.polyline(latlngs, { color:'#4f9d69', weight:5, opacity:0.85 }).addTo(map);
+    map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
+
+    waypoints.forEach(w => {
+      const icon = L.divIcon({
+        className:'', html:'<div class="wpt-pin"><span>●</span></div>',
+        iconSize:[22,22], iconAnchor:[11,20]
+      });
+      const m = L.marker([w.lat, w.lon], { icon }).bindPopup(w.name).addTo(map);
+      wptMarkers.push(m);
+    });
+
+    document.getElementById('placeholder').classList.add('hide');
+    document.getElementById('navContent').style.display = 'none';
+    document.getElementById('startRow').style.display = 'flex';
+    document.getElementById('dashboard').classList.add('show');
+    document.getElementById('startBtn').disabled = false;
+  }
+
+  // ---------- File input ----------
+  document.getElementById('fileInput').addEventListener('change', function(e){
+    const file = e.target.files[0];
+    if(!file) return;
+    document.getElementById('fileLabel').textContent = file.name;
+    const reader = new FileReader();
+    reader.onload = function(ev){
+      try{
+        const { points, waypoints } = parseGPX(ev.target.result);
+        loadRoute(points, waypoints);
+        hideBanner();
+      }catch(err){
+        showBanner('<strong>Fehler beim Einlesen:</strong> ' + err.message);
+      }
+    };
+    reader.onerror = () => showBanner('<strong>Fehler:</strong> Datei konnte nicht gelesen werden.');
+    reader.readAsText(file);
+  });
+
+  // ---------- Banner ----------
+  function showBanner(html){
+    const b = document.getElementById('banner');
+    b.innerHTML = html;
+    b.classList.add('show');
+  }
+  function hideBanner(){
+    document.getElementById('banner').classList.remove('show');
+  }
+
+  // ---------- Map controls ----------
+  document.getElementById('followBtn').addEventListener('click', function(){
+    followMode = !followMode;
+    this.classList.toggle('active', followMode);
+    if(followMode && lastFix) map.setView([lastFix.lat, lastFix.lon], Math.max(map.getZoom(), 16));
+  });
+  document.getElementById('fitBtn').addEventListener('click', function(){
+    if(routeLayer) map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
+  });
+  map.on('dragstart', function(){
+    followMode = false;
+    document.getElementById('followBtn').classList.remove('active');
+  });
+
+  // ---------- Navigation ----------
+  document.getElementById('startBtn').addEventListener('click', startNav);
+  document.getElementById('stopBtn').addEventListener('click', stopNav);
+
+  function startNav(){
+    if(!navigator.geolocation){
+      showBanner('<strong>Kein GPS verfügbar:</strong> Dieser Browser unterstützt keine Standortermittlung.');
+      return;
+    }
+    const isSecure = window.isSecureContext;
+    if(!isSecure){
+      showBanner('<strong>GPS benötigt HTTPS:</strong> Standortzugriff funktioniert nur über eine sichere Verbindung. Lade diese Datei auf einen Webspace mit HTTPS (z.\u00a0B. GitHub Pages) hoch oder öffne sie über einen lokalen HTTPS-Server, um live zu navigieren.');
+      return;
+    }
+
+    document.getElementById('navContent').style.display = 'block';
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('stopBtn').style.display = 'block';
+    document.getElementById('fileLabel').style.pointerEvents = 'none';
+    document.getElementById('fileLabel').style.opacity = '0.5';
+
+    watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
+      enableHighAccuracy:true, maximumAge:2000, timeout:15000
+    });
+  }
+
+  function stopNav(){
+    if(watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    document.getElementById('startBtn').style.display = 'block';
+    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('fileLabel').style.pointerEvents = 'auto';
+    document.getElementById('fileLabel').style.opacity = '1';
+  }
+
+  function onGeoError(err){
+    const msgs = {
+      1: 'Standortzugriff wurde verweigert. Bitte erlaube den Zugriff in den Browser-Einstellungen.',
+      2: 'Standort konnte nicht ermittelt werden.',
+      3: 'Zeitüberschreitung beim Ermitteln des Standorts.'
+    };
+    showBanner('<strong>GPS-Fehler:</strong> ' + (msgs[err.code] || err.message));
+  }
+
+  function onPosition(pos){
+    hideBanner();
+    const p = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+    lastFix = p;
+
+    // marker
+    const heading = pos.coords.heading;
+    const html = (heading !== null && !isNaN(heading))
+      ? `<div class="user-arrow" style="transform:rotate(${heading}deg)"></div>`
+      : `<div class="user-dot"></div>`;
+    const icon = L.divIcon({ className:'', html, iconSize:[20,20], iconAnchor:[10,10] });
+    if(!userMarker){
+      userMarker = L.marker([p.lat, p.lon], { icon, zIndexOffset:1000 }).addTo(map);
+    }else{
+      userMarker.setLatLng([p.lat, p.lon]);
+      userMarker.setIcon(icon);
+    }
+    if(followMode) map.setView([p.lat, p.lon], Math.max(map.getZoom(), 16));
+
+    if(trackPoints.length < 2) return;
+
+    // progress along route
+    const nearest = findNearestOnTrack(p);
+    const remaining = totalDist - nearest.traveled;
+    document.getElementById('statRemaining').textContent = fmtDist(remaining);
+
+    const kmh = pos.coords.speed != null ? (pos.coords.speed * 3.6) : null;
+    document.getElementById('statSpeed').textContent = kmh != null ? kmh.toFixed(1) : '–';
+
+    // off-route
+    const offBanner = document.getElementById('offRouteBanner');
+    if(nearest.dist > 50){
+      offBanner.classList.add('show');
+      document.getElementById('offRouteDist').textContent = fmtDist(nearest.dist);
+    }else{
+      offBanner.classList.remove('show');
+    }
+
+    // compass: bearing to a lookahead point ~30m further along the route
+    const lookahead = pointAtDistance(Math.min(nearest.traveled + 30, totalDist));
+    const brg = bearing(p, lookahead);
+    document.getElementById('compassArrow').style.transform = `rotate(${brg}deg)`;
+    document.getElementById('compassLabel').textContent = cardinal(brg) + ' ' + Math.round(brg) + '°';
+
+    // next waypoint
+    const upcoming = matchedWpts.find(w => w.cumDist > nearest.traveled);
+    const nextEl = document.getElementById('nextWpt');
+    if(upcoming){
+      nextEl.innerHTML = 'Nächster Punkt: <b>' + upcoming.name + '</b> in ' + fmtDist(upcoming.cumDist - nearest.traveled);
+    }else{
+      nextEl.innerHTML = '&nbsp;';
+    }
+
+    // trail-blaze progress bar
+    const pct = Math.max(0, Math.min(100, (nearest.traveled / totalDist) * 100));
+    document.getElementById('trailFill').style.width = pct + '%';
+    document.getElementById('trailRider').style.left = pct + '%';
+
+    const trailEl = document.getElementById('trail');
+    // draw waypoint ticks once track is known (idempotent-ish: clear old ticks first)
+    trailEl.querySelectorAll('.trail-wpt').forEach(el => el.remove());
+    matchedWpts.forEach(w => {
+      const wpct = (w.cumDist / totalDist) * 100;
+      const tick = document.createElement('div');
+      tick.className = 'trail-wpt';
+      tick.style.left = wpct + '%';
+      trailEl.appendChild(tick);
+    });
+  }
+
+})();
+</script>
+</body>
+</html>
