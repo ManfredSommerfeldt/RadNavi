@@ -18,6 +18,17 @@
     --text-dim:#8b938c;
     --line:#2c3236;
   }
+  body.theme-day{
+    --asphalt:#eef1f0;
+    --panel:#ffffff;
+    --panel-raised:#f2f4f3;
+    --sign-yellow:#b9790f;
+    --route-green:#2f7d4d;
+    --warn-red:#c23a28;
+    --text:#1b1e1f;
+    --text-dim:#5b625d;
+    --line:#dfe3e1;
+  }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{height:100%;margin:0;}
   body{
@@ -124,6 +135,7 @@
     background:var(--panel); border-top:1px solid var(--line);
     padding:14px 16px calc(14px + env(safe-area-inset-bottom));
     display:none; z-index:1000;
+    max-height:60vh; overflow-y:auto;
   }
   #dashboard.show{display:block;}
   #placeholder{
@@ -131,6 +143,7 @@
   }
   #placeholder.hide{display:none;}
   .stat-row{display:flex; align-items:flex-end; gap:22px; margin-bottom:10px;}
+  .stat-row2{display:flex; gap:26px; margin-bottom:10px;}
   .stat-main .stat-value{font-size:40px; font-weight:800; letter-spacing:-0.01em; line-height:1;}
   .stat-main .stat-label{font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.06em; margin-top:2px;}
   .stat-sub{display:flex; flex-direction:column; align-items:flex-start;}
@@ -149,6 +162,31 @@
     font-size:12.5px; color:var(--text-dim); margin-bottom:10px; min-height:16px;
   }
   #nextWpt b{color:var(--text);}
+
+  #nextTurn{
+    font-size:12.5px; color:var(--text-dim); margin-bottom:6px; min-height:16px;
+  }
+  #nextTurn b{color:var(--text);}
+
+  /* --- Elevation profile --- */
+  #elevPanel{margin-bottom:10px; display:none;}
+  #elevPanel.show{display:block;}
+  #elevHeader{
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em;
+    margin-bottom:4px;
+  }
+  #elevStats{font-size:11px; color:var(--text-dim); text-transform:none; letter-spacing:0;}
+  #elevSvg{width:100%; height:54px; display:block;}
+  #elevPath{fill:none; stroke:var(--route-green); stroke-width:2;}
+  #elevMarker{fill:var(--sign-yellow); stroke:#221a06; stroke-width:1.5; display:none;}
+
+  /* --- Recording / GPX export --- */
+  #recordingRow{
+    display:none; align-items:center; justify-content:space-between; gap:10px;
+    margin-top:10px; font-size:12px; color:var(--text-dim);
+  }
+  #recordingRow.show{display:flex;}
 
   #offRouteBanner{
     display:none; background:rgba(226,84,63,0.15); border:1px solid var(--warn-red);
@@ -239,14 +277,39 @@
         </div>
       </div>
 
+      <div class="stat-row2">
+        <div class="stat-sub">
+          <div class="stat-value" id="statTime">–</div>
+          <div class="stat-label">Fahrtzeit</div>
+        </div>
+        <div class="stat-sub">
+          <div class="stat-value" id="statAvgSpeed">–</div>
+          <div class="stat-label">Ø km/h</div>
+        </div>
+      </div>
+
       <div id="offRouteBanner">⚠ Du bist <span id="offRouteDist">–</span> von der Route entfernt</div>
 
+      <div id="nextTurn">&nbsp;</div>
       <div id="nextWpt">&nbsp;</div>
 
       <div id="trail">
         <div id="trailTrack"></div>
         <div id="trailFill"></div>
         <div id="trailRider"></div>
+      </div>
+
+      <div id="elevPanel">
+        <div id="elevHeader"><span>Höhenprofil</span><span id="elevStats"></span></div>
+        <svg id="elevSvg" viewBox="0 0 300 54" preserveAspectRatio="none">
+          <path id="elevPath" d=""/>
+          <circle id="elevMarker" r="4" cx="0" cy="0"/>
+        </svg>
+      </div>
+
+      <div id="recordingRow">
+        <span id="recordingInfo">Aufzeichnung: 0 m</span>
+        <button class="btn btn-ghost" id="exportBtn" disabled>GPX exportieren</button>
       </div>
     </div>
 
@@ -273,6 +336,17 @@
       navigator.serviceWorker.register('sw.js').catch(()=>{});
     });
   }
+
+  // ---------- Night mode (auto by time of day) ----------
+  function updateTheme(){
+    const hour = new Date().getHours();
+    const isDay = hour >= 6 && hour < 20;
+    document.body.classList.toggle('theme-day', isDay);
+    const meta = document.querySelector('meta[name=theme-color]');
+    if(meta) meta.setAttribute('content', isDay ? '#eef1f0' : '#14171a');
+  }
+  updateTheme();
+  setInterval(updateTheme, 5 * 60 * 1000);
 
   // ---------- Map setup ----------
   const map = L.map('map', { zoomControl:false }).setView([51.1657, 10.4515], 6);
@@ -301,6 +375,21 @@
   let announcedNear = new Set();
   let announcedClose = new Set();
   let announcedArrival = false;
+
+  // turn-by-turn state (reset per route)
+  let turnPoints = [];
+  let announcedTurnFar = new Set();
+  let announcedTurnNear = new Set();
+
+  // elevation profile state (reset per route)
+  let elevProfile = null; // {w,h,minE,maxE}
+
+  // trip timer / GPS-track recording state (reset per nav session)
+  let navStartTime = null;
+  let tripTimerInterval = null;
+  let recordedTrack = [];
+  let recordedDistance = 0;
+  let lastRecordedPoint = null;
 
   // ---------- Geo helpers ----------
   const toRad = d => d * Math.PI / 180;
@@ -380,6 +469,108 @@
     return 15;
   }
 
+  function fmtDuration(ms){
+    const totalSec = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const pad = n => String(n).padStart(2, '0');
+    return h > 0 ? h + ':' + pad(m) + ':' + pad(s) : m + ':' + pad(s);
+  }
+
+  function elevationAt(dist){
+    if(trackPoints.length < 2) return null;
+    if(dist <= 0) return trackPoints[0].ele;
+    if(dist >= totalDist) return trackPoints[trackPoints.length - 1].ele;
+    let i = 0;
+    while(cumDist[i+1] < dist) i++;
+    const a = trackPoints[i], b = trackPoints[i+1];
+    if(a.ele == null || b.ele == null) return null;
+    const segLen = cumDist[i+1] - cumDist[i];
+    const t = segLen === 0 ? 0 : (dist - cumDist[i]) / segLen;
+    return a.ele + (b.ele - a.ele) * t;
+  }
+
+  // Detects turns by comparing the bearing just before / after each point along
+  // the track, then merges nearby candidates so one intersection isn't announced twice.
+  function computeTurns(){
+    const STEP = 15, LOOK = 20, MIN_ANGLE = 25, MERGE_DIST = 40;
+    const candidates = [];
+    for(let d = LOOK; d <= totalDist - LOOK; d += STEP){
+      const before = pointAtDistance(d - LOOK);
+      const at = pointAtDistance(d);
+      const after = pointAtDistance(d + LOOK);
+      const b1 = bearing(before, at);
+      const b2 = bearing(at, after);
+      let delta = b2 - b1;
+      while(delta > 180) delta -= 360;
+      while(delta < -180) delta += 360;
+      if(Math.abs(delta) >= MIN_ANGLE) candidates.push({ cumDist: d, angle: delta });
+    }
+
+    const merged = [];
+    candidates.forEach(c => {
+      const last = merged[merged.length - 1];
+      if(last && c.cumDist - last.cumDist <= MERGE_DIST){
+        if(Math.abs(c.angle) > Math.abs(last.angle)) merged[merged.length - 1] = c;
+      }else{
+        merged.push(c);
+      }
+    });
+
+    return merged.map(c => {
+      const right = c.angle > 0;
+      const abs = Math.abs(c.angle);
+      const label = abs >= 100 ? (right ? 'scharf rechts' : 'scharf links')
+                  : abs >= 55  ? (right ? 'rechts' : 'links')
+                  :              (right ? 'leicht rechts' : 'leicht links');
+      return { cumDist: c.cumDist, label };
+    });
+  }
+
+  function buildElevationProfile(){
+    const path = document.getElementById('elevPath');
+    const marker = document.getElementById('elevMarker');
+    const panel = document.getElementById('elevPanel');
+    const statsEl = document.getElementById('elevStats');
+
+    const elevs = trackPoints.map(p => p.ele).filter(e => e != null);
+    if(elevs.length < 2){
+      elevProfile = null;
+      panel.classList.remove('show');
+      marker.style.display = 'none';
+      return;
+    }
+
+    const w = 300, h = 54, pad = 4;
+    const minE = Math.min(...elevs), maxE = Math.max(...elevs);
+    const range = Math.max(1, maxE - minE);
+    let d = '';
+    trackPoints.forEach((p, i) => {
+      if(p.ele == null) return;
+      const x = (cumDist[i] / totalDist) * w;
+      const y = h - pad - ((p.ele - minE) / range) * (h - 2*pad);
+      d += (d ? 'L' : 'M') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    });
+    path.setAttribute('d', d);
+
+    let ascent = 0, descent = 0, prevEle = trackPoints[0].ele, smoothed = prevEle;
+    for(let i = 1; i < trackPoints.length; i++){
+      const e = trackPoints[i].ele;
+      if(e == null || prevEle == null) continue;
+      smoothed = smoothed * 0.7 + e * 0.3;
+      const diff = smoothed - prevEle;
+      if(Math.abs(diff) >= 1){
+        if(diff > 0) ascent += diff; else descent += -diff;
+        prevEle = smoothed;
+      }
+    }
+
+    statsEl.textContent = '↑ ' + Math.round(ascent) + ' m   ↓ ' + Math.round(descent) + ' m';
+    elevProfile = { w, h, pad, minE, range };
+    panel.classList.add('show');
+  }
+
   // ---------- Voice ----------
   function speak(text){
     if(!voiceEnabled || !('speechSynthesis' in window)) return;
@@ -404,10 +595,15 @@
     if(pts.length === 0) pts = Array.from(xml.querySelectorAll('rtept'));
     if(pts.length === 0) throw new Error('Keine Track- oder Routenpunkte in dieser Datei gefunden.');
 
-    const points = pts.map(pt => ({
-      lat: parseFloat(pt.getAttribute('lat')),
-      lon: parseFloat(pt.getAttribute('lon'))
-    }));
+    const points = pts.map(pt => {
+      const eleEl = pt.querySelector('ele');
+      const ele = eleEl ? parseFloat(eleEl.textContent) : NaN;
+      return {
+        lat: parseFloat(pt.getAttribute('lat')),
+        lon: parseFloat(pt.getAttribute('lon')),
+        ele: isNaN(ele) ? null : ele
+      };
+    });
 
     const waypoints = Array.from(xml.querySelectorAll('wpt')).map(pt => {
       const nameEl = pt.querySelector('name');
@@ -444,6 +640,23 @@
     announcedNear = new Set();
     announcedClose = new Set();
     announcedArrival = false;
+    announcedTurnFar = new Set();
+    announcedTurnNear = new Set();
+
+    turnPoints = computeTurns();
+    buildElevationProfile();
+
+    // reset trip timer / recording state for the new route
+    navStartTime = null;
+    if(tripTimerInterval) clearInterval(tripTimerInterval);
+    tripTimerInterval = null;
+    recordedTrack = [];
+    recordedDistance = 0;
+    lastRecordedPoint = null;
+    document.getElementById('statTime').textContent = '–';
+    document.getElementById('statAvgSpeed').textContent = '–';
+    document.getElementById('recordingRow').classList.remove('show');
+    document.getElementById('exportBtn').disabled = true;
 
     // draw on map
     if(routeLayer) map.removeLayer(routeLayer);
@@ -535,6 +748,16 @@
     document.getElementById('fileLabel').style.pointerEvents = 'none';
     document.getElementById('fileLabel').style.opacity = '0.5';
 
+    navStartTime = Date.now();
+    recordedTrack = [];
+    recordedDistance = 0;
+    lastRecordedPoint = null;
+    document.getElementById('recordingRow').classList.add('show');
+    document.getElementById('recordingInfo').textContent = 'Aufzeichnung: 0 m';
+    document.getElementById('exportBtn').disabled = true;
+    updateTripStats();
+    tripTimerInterval = setInterval(updateTripStats, 1000);
+
     watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
       enableHighAccuracy:true, maximumAge:2000, timeout:15000
     });
@@ -544,10 +767,21 @@
     if(watchId !== null) navigator.geolocation.clearWatch(watchId);
     watchId = null;
     if('speechSynthesis' in window) window.speechSynthesis.cancel();
+    if(tripTimerInterval) clearInterval(tripTimerInterval);
+    tripTimerInterval = null;
     document.getElementById('startBtn').style.display = 'block';
     document.getElementById('stopBtn').style.display = 'none';
     document.getElementById('fileLabel').style.pointerEvents = 'auto';
     document.getElementById('fileLabel').style.opacity = '1';
+  }
+
+  function updateTripStats(){
+    if(!navStartTime) return;
+    const elapsedMs = Date.now() - navStartTime;
+    document.getElementById('statTime').textContent = fmtDuration(elapsedMs);
+    const hours = elapsedMs / 3600000;
+    const avg = hours > 0 ? (recordedDistance / 1000) / hours : 0;
+    document.getElementById('statAvgSpeed').textContent = avg.toFixed(1);
   }
 
   function onGeoError(err){
@@ -592,6 +826,19 @@
 
     document.getElementById('statSpeed').textContent = kmh != null ? kmh.toFixed(1) : '–';
 
+    // record the actually-ridden track (independent of route matching) for GPX export
+    if(navStartTime){
+      const moved = lastRecordedPoint ? haversine(lastRecordedPoint, p) : Infinity;
+      if(moved >= 3){
+        recordedDistance += lastRecordedPoint ? moved : 0;
+        recordedTrack.push({ lat:p.lat, lon:p.lon, ele: pos.coords.altitude, time: new Date().toISOString() });
+        lastRecordedPoint = p;
+        document.getElementById('recordingInfo').textContent = 'Aufzeichnung: ' + fmtDist(recordedDistance);
+        document.getElementById('exportBtn').disabled = recordedTrack.length < 2;
+      }
+      updateTripStats();
+    }
+
     if(trackPoints.length < 2) return;
 
     // progress along route
@@ -624,6 +871,37 @@
     const brg = bearing(p, lookahead);
     document.getElementById('compassArrow').style.transform = `rotate(${brg}deg)`;
     document.getElementById('compassLabel').textContent = cardinal(brg) + ' ' + Math.round(brg) + '°';
+
+    // next turn + proximity voice ("in 100 Metern links abbiegen")
+    const upcomingTurn = turnPoints.find(t => t.cumDist > nearest.traveled);
+    const turnEl = document.getElementById('nextTurn');
+    if(upcomingTurn){
+      const distTo = upcomingTurn.cumDist - nearest.traveled;
+      turnEl.innerHTML = 'Nächste Abzweigung: <b>' + upcomingTurn.label + '</b> in ' + fmtDist(distTo);
+      if(distTo <= 150 && !announcedTurnFar.has(upcomingTurn.cumDist)){
+        announcedTurnFar.add(upcomingTurn.cumDist);
+        speak('In ' + Math.round(distTo / 10) * 10 + ' Metern ' + upcomingTurn.label + ' abbiegen.');
+      }
+      if(distTo <= 30 && !announcedTurnNear.has(upcomingTurn.cumDist)){
+        announcedTurnNear.add(upcomingTurn.cumDist);
+        speak('Jetzt ' + upcomingTurn.label + '.');
+      }
+    }else{
+      turnEl.innerHTML = '&nbsp;';
+    }
+
+    // elevation profile marker
+    if(elevProfile){
+      const ele = elevationAt(nearest.traveled);
+      const marker = document.getElementById('elevMarker');
+      if(ele != null){
+        const x = (nearest.traveled / totalDist) * elevProfile.w;
+        const y = elevProfile.h - elevProfile.pad - ((ele - elevProfile.minE) / elevProfile.range) * (elevProfile.h - 2*elevProfile.pad);
+        marker.setAttribute('cx', x.toFixed(1));
+        marker.setAttribute('cy', y.toFixed(1));
+        marker.style.display = 'block';
+      }
+    }
 
     // next waypoint + proximity voice
     const upcoming = matchedWpts.find(w => w.cumDist > nearest.traveled);
@@ -757,6 +1035,32 @@
     downloadCancelled = true;
     hideDownloadPanel();
   });
+
+  // ---------- GPX export of the recorded track ----------
+  function exportRecordedGPX(){
+    if(recordedTrack.length < 2) return;
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const trkpts = recordedTrack.map(pt => {
+      const ele = (pt.ele != null && !isNaN(pt.ele)) ? '<ele>' + pt.ele.toFixed(1) + '</ele>' : '';
+      return '<trkpt lat="' + pt.lat + '" lon="' + pt.lon + '">' + ele + '<time>' + esc(pt.time) + '</time></trkpt>';
+    }).join('\n');
+
+    const gpx = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<gpx version="1.1" creator="Rad-Navi" xmlns="http://www.topografix.com/GPX/1/1">\n' +
+      '<trk><name>Rad-Navi Aufzeichnung ' + esc(new Date().toLocaleString('de-DE')) + '</name><trkseg>\n' +
+      trkpts + '\n</trkseg></trk>\n</gpx>\n';
+
+    const blob = new Blob([gpx], { type:'application/gpx+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rad-navi-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.gpx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  document.getElementById('exportBtn').addEventListener('click', exportRecordedGPX);
 
 })();
 </script>

@@ -1,6 +1,6 @@
 // Service Worker für Rad-Navi: cached App-Shell + Kartenkacheln für Offline-Nutzung.
 // Bei größeren Änderungen an der App: CACHE_NAME hochzählen, damit alte Caches ersetzt werden.
-const CACHE_NAME = 'rad-navi-v1';
+const CACHE_NAME = 'rad-navi-v2';
 
 const SHELL_URLS = [
   './',
