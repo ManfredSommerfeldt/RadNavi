@@ -73,6 +73,18 @@
   #banner.show{display:block;}
   #banner strong{color:var(--warn-red);}
 
+  /* --- Download progress panel --- */
+  #downloadPanel{
+    position:absolute; top:10px; left:10px; right:10px;
+    background:rgba(28,32,36,0.96); border:1px solid var(--sign-yellow);
+    color:var(--text); padding:12px; border-radius:10px;
+    font-size:13px; display:none; z-index:950;
+  }
+  #downloadPanel.show{display:block;}
+  #downloadText{margin-bottom:8px; font-weight:700;}
+  #downloadBarTrack{height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin-bottom:10px;}
+  #downloadBarFill{height:100%; width:0%; background:var(--sign-yellow);}
+
   /* --- Floating controls on map --- */
   #mapControls{
     position:absolute; right:10px; bottom:12px; z-index:900;
@@ -85,6 +97,7 @@
     cursor:pointer;
   }
   .fab.active{background:var(--sign-yellow); color:#221a06; border-color:var(--sign-yellow);}
+  #offlineBtn{display:none;}
 
   /* --- User marker --- */
   .user-dot{
@@ -164,7 +177,16 @@
     border:2px solid #221a06; left:0%;
   }
 
-  #startRow{display:flex; gap:10px; margin-top:12px;}
+  /* --- Settings row (voice toggle) --- */
+  #settingsRow{
+    display:none; align-items:center; gap:8px; margin-top:12px;
+    font-size:13px; color:var(--text-dim);
+  }
+  #settingsRow input[type=checkbox]{
+    width:18px; height:18px; accent-color:var(--sign-yellow);
+  }
+
+  #startRow{display:flex; gap:10px; margin-top:10px;}
   #startRow .btn{flex:1;}
 </style>
 </head>
@@ -183,9 +205,16 @@
 
     <div id="banner"></div>
 
+    <div id="downloadPanel">
+      <div id="downloadText">Kacheln werden geladen… 0 / 0</div>
+      <div id="downloadBarTrack"><div id="downloadBarFill"></div></div>
+      <button class="btn btn-ghost" id="cancelDownloadBtn">Abbrechen</button>
+    </div>
+
     <div id="mapControls">
       <div class="fab active" id="followBtn" title="Karte folgt Position">◎</div>
       <div class="fab" id="fitBtn" title="Ganze Route zeigen">⤢</div>
+      <div class="fab" id="offlineBtn" title="Karte für Route offline speichern">⭳</div>
     </div>
   </div>
 
@@ -221,6 +250,11 @@
       </div>
     </div>
 
+    <label id="settingsRow">
+      <input type="checkbox" id="voiceToggle" checked>
+      <span>🔊 Sprachansagen (Route verlassen, Wegpunkte, Ziel)</span>
+    </label>
+
     <div id="startRow" style="display:none;">
       <button class="btn btn-primary" id="startBtn">Navigation starten</button>
       <button class="btn btn-danger" id="stopBtn" style="display:none;">Stopp</button>
@@ -232,6 +266,13 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 (function(){
+
+  // ---------- Service worker (offline cache for app shell + map tiles) ----------
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(()=>{});
+    });
+  }
 
   // ---------- Map setup ----------
   const map = L.map('map', { zoomControl:false }).setView([51.1657, 10.4515], 6);
@@ -251,6 +292,15 @@
   let watchId = null;
   let followMode = true;
   let lastFix = null;
+  let lastZoomChange = 0;
+
+  // voice-announcement state (reset per route)
+  let voiceEnabled = true;
+  let wasOffRoute = false;
+  let lastOffRouteAnnounce = 0;
+  let announcedNear = new Set();
+  let announcedClose = new Set();
+  let announcedArrival = false;
 
   // ---------- Geo helpers ----------
   const toRad = d => d * Math.PI / 180;
@@ -277,7 +327,6 @@
     return dirs[Math.round(deg / 45) % 8];
   }
 
-  // Project point p onto segment a-b (local flat approximation, fine for short segments)
   function projectOnSegment(p, a, b){
     const R = 6371000;
     const lat0 = toRad(a.lat);
@@ -308,7 +357,6 @@
   }
 
   function pointAtDistance(dist){
-    // find point on track at given cumulative distance
     if(dist <= 0) return trackPoints[0];
     if(dist >= totalDist) return trackPoints[trackPoints.length-1];
     let i = 0;
@@ -323,6 +371,29 @@
     if(m < 0) m = 0;
     return m < 1000 ? Math.round(m) + ' m' : (m/1000).toFixed(m < 10000 ? 2 : 1) + ' km';
   }
+
+  function computeNavZoom(kmh){
+    if(kmh == null) return 17;
+    if(kmh < 8) return 18;
+    if(kmh < 20) return 17;
+    if(kmh < 35) return 16;
+    return 15;
+  }
+
+  // ---------- Voice ----------
+  function speak(text){
+    if(!voiceEnabled || !('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'de-DE';
+    window.speechSynthesis.speak(u);
+  }
+
+  document.getElementById('voiceToggle').addEventListener('change', function(){
+    voiceEnabled = this.checked;
+    if(voiceEnabled) speak('Sprachausgabe aktiviert');
+    else if('speechSynthesis' in window) window.speechSynthesis.cancel();
+  });
 
   // ---------- GPX parsing ----------
   function parseGPX(xmlText){
@@ -367,6 +438,13 @@
       return { name: w.name, lat: w.lat, lon: w.lon, cumDist: cumDist[bestIdx] };
     }).sort((a,b) => a.cumDist - b.cumDist);
 
+    // reset voice-announcement state for the new route
+    wasOffRoute = false;
+    lastOffRouteAnnounce = 0;
+    announcedNear = new Set();
+    announcedClose = new Set();
+    announcedArrival = false;
+
     // draw on map
     if(routeLayer) map.removeLayer(routeLayer);
     wptMarkers.forEach(m => map.removeLayer(m));
@@ -388,6 +466,8 @@
     document.getElementById('placeholder').classList.add('hide');
     document.getElementById('navContent').style.display = 'none';
     document.getElementById('startRow').style.display = 'flex';
+    document.getElementById('settingsRow').style.display = 'flex';
+    document.getElementById('offlineBtn').style.display = 'flex';
     document.getElementById('dashboard').classList.add('show');
     document.getElementById('startBtn').disabled = false;
   }
@@ -444,9 +524,8 @@
       showBanner('<strong>Kein GPS verfügbar:</strong> Dieser Browser unterstützt keine Standortermittlung.');
       return;
     }
-    const isSecure = window.isSecureContext;
-    if(!isSecure){
-      showBanner('<strong>GPS benötigt HTTPS:</strong> Standortzugriff funktioniert nur über eine sichere Verbindung. Lade diese Datei auf einen Webspace mit HTTPS (z.\u00a0B. GitHub Pages) hoch oder öffne sie über einen lokalen HTTPS-Server, um live zu navigieren.');
+    if(!window.isSecureContext){
+      showBanner('<strong>GPS benötigt HTTPS:</strong> Standortzugriff funktioniert nur über eine sichere Verbindung. Lade diese Datei auf einen Webspace mit HTTPS (z.\u00a0B. GitHub Pages) hoch, um live zu navigieren.');
       return;
     }
 
@@ -464,6 +543,7 @@
   function stopNav(){
     if(watchId !== null) navigator.geolocation.clearWatch(watchId);
     watchId = null;
+    if('speechSynthesis' in window) window.speechSynthesis.cancel();
     document.getElementById('startBtn').style.display = 'block';
     document.getElementById('stopBtn').style.display = 'none';
     document.getElementById('fileLabel').style.pointerEvents = 'auto';
@@ -483,6 +563,7 @@
     hideBanner();
     const p = { lat: pos.coords.latitude, lon: pos.coords.longitude };
     lastFix = p;
+    const kmh = pos.coords.speed != null ? (pos.coords.speed * 3.6) : null;
 
     // marker
     const heading = pos.coords.heading;
@@ -496,7 +577,20 @@
       userMarker.setLatLng([p.lat, p.lon]);
       userMarker.setIcon(icon);
     }
-    if(followMode) map.setView([p.lat, p.lon], Math.max(map.getZoom(), 16));
+
+    // follow + speed-adaptive zoom (comfort feature)
+    if(followMode){
+      const targetZoom = computeNavZoom(kmh);
+      const now2 = Date.now();
+      if(Math.abs(targetZoom - map.getZoom()) >= 1 && now2 - lastZoomChange > 4000){
+        map.setView([p.lat, p.lon], targetZoom);
+        lastZoomChange = now2;
+      }else{
+        map.panTo([p.lat, p.lon]);
+      }
+    }
+
+    document.getElementById('statSpeed').textContent = kmh != null ? kmh.toFixed(1) : '–';
 
     if(trackPoints.length < 2) return;
 
@@ -505,16 +599,24 @@
     const remaining = totalDist - nearest.traveled;
     document.getElementById('statRemaining').textContent = fmtDist(remaining);
 
-    const kmh = pos.coords.speed != null ? (pos.coords.speed * 3.6) : null;
-    document.getElementById('statSpeed').textContent = kmh != null ? kmh.toFixed(1) : '–';
-
     // off-route
     const offBanner = document.getElementById('offRouteBanner');
+    const now = Date.now();
     if(nearest.dist > 50){
       offBanner.classList.add('show');
       document.getElementById('offRouteDist').textContent = fmtDist(nearest.dist);
+      if(!wasOffRoute){
+        speak('Achtung, du bist ' + Math.round(nearest.dist) + ' Meter von der Route entfernt.');
+        lastOffRouteAnnounce = now;
+        wasOffRoute = true;
+      }else if(now - lastOffRouteAnnounce > 45000){
+        speak('Du bist weiterhin abseits der Route.');
+        lastOffRouteAnnounce = now;
+      }
     }else{
       offBanner.classList.remove('show');
+      if(wasOffRoute) speak('Zurück auf der Route.');
+      wasOffRoute = false;
     }
 
     // compass: bearing to a lookahead point ~30m further along the route
@@ -523,13 +625,27 @@
     document.getElementById('compassArrow').style.transform = `rotate(${brg}deg)`;
     document.getElementById('compassLabel').textContent = cardinal(brg) + ' ' + Math.round(brg) + '°';
 
-    // next waypoint
+    // next waypoint + proximity voice
     const upcoming = matchedWpts.find(w => w.cumDist > nearest.traveled);
     const nextEl = document.getElementById('nextWpt');
     if(upcoming){
-      nextEl.innerHTML = 'Nächster Punkt: <b>' + upcoming.name + '</b> in ' + fmtDist(upcoming.cumDist - nearest.traveled);
+      const distTo = upcoming.cumDist - nearest.traveled;
+      nextEl.innerHTML = 'Nächster Punkt: <b>' + upcoming.name + '</b> in ' + fmtDist(distTo);
+      if(distTo <= 300 && !announcedNear.has(upcoming.name)){
+        announcedNear.add(upcoming.name);
+        speak('In 300 Metern: ' + upcoming.name);
+      }
+      if(distTo <= 50 && !announcedClose.has(upcoming.name)){
+        announcedClose.add(upcoming.name);
+        speak('Jetzt: ' + upcoming.name);
+      }
     }else{
       nextEl.innerHTML = '&nbsp;';
+    }
+
+    if(remaining < 30 && !announcedArrival){
+      announcedArrival = true;
+      speak('Ziel erreicht.');
     }
 
     // trail-blaze progress bar
@@ -538,7 +654,6 @@
     document.getElementById('trailRider').style.left = pct + '%';
 
     const trailEl = document.getElementById('trail');
-    // draw waypoint ticks once track is known (idempotent-ish: clear old ticks first)
     trailEl.querySelectorAll('.trail-wpt').forEach(el => el.remove());
     matchedWpts.forEach(w => {
       const wpct = (w.cumDist / totalDist) * 100;
@@ -548,6 +663,100 @@
       trailEl.appendChild(tick);
     });
   }
+
+  // ---------- Offline map download (uses the service worker's tile cache) ----------
+  const OFFLINE_ZOOM_MIN = 13;
+  const OFFLINE_ZOOM_MAX = 16;
+  let downloadCancelled = false;
+
+  function lon2tileX(lon, z){ return Math.floor((lon + 180) / 360 * Math.pow(2, z)); }
+  function lat2tileY(lat, z){
+    const rad = lat * Math.PI / 180;
+    return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z));
+  }
+
+  function routeBounds(){
+    let minLat=90, maxLat=-90, minLon=180, maxLon=-180;
+    trackPoints.forEach(p => {
+      if(p.lat < minLat) minLat = p.lat;
+      if(p.lat > maxLat) maxLat = p.lat;
+      if(p.lon < minLon) minLon = p.lon;
+      if(p.lon > maxLon) maxLon = p.lon;
+    });
+    const buf = 0.003; // ~300m buffer around the route
+    return { minLat:minLat-buf, maxLat:maxLat+buf, minLon:minLon-buf, maxLon:maxLon+buf };
+  }
+
+  function buildTileList(){
+    const b = routeBounds();
+    const tiles = [];
+    for(let z = OFFLINE_ZOOM_MIN; z <= OFFLINE_ZOOM_MAX; z++){
+      const xMin = lon2tileX(b.minLon, z), xMax = lon2tileX(b.maxLon, z);
+      const yMin = lat2tileY(b.maxLat, z), yMax = lat2tileY(b.minLat, z);
+      for(let x = xMin; x <= xMax; x++){
+        for(let y = yMin; y <= yMax; y++){
+          const sub = ['a','b','c'][(x+y) % 3];
+          tiles.push(`https://${sub}.tile.openstreetmap.org/${z}/${x}/${y}.png`);
+        }
+      }
+    }
+    return tiles;
+  }
+
+  function showDownloadPanel(){ document.getElementById('downloadPanel').classList.add('show'); }
+  function hideDownloadPanel(){ document.getElementById('downloadPanel').classList.remove('show'); }
+  function updateDownloadProgress(done, total){
+    document.getElementById('downloadText').textContent = `Kacheln werden geladen… ${done} / ${total}`;
+    document.getElementById('downloadBarFill').style.width = (total ? (done/total*100) : 0) + '%';
+  }
+
+  document.getElementById('offlineBtn').addEventListener('click', async function(){
+    if(trackPoints.length < 2) return;
+
+    if(!('serviceWorker' in navigator)){
+      showBanner('<strong>Nicht unterstützt:</strong> Dieser Browser kann keine Offline-Karten speichern.');
+      return;
+    }
+    if(!navigator.serviceWorker.controller){
+      showBanner('<strong>Offline-Modus wird vorbereitet:</strong> Lade die Seite einmal komplett neu und versuche es danach erneut.');
+      return;
+    }
+
+    const tiles = buildTileList();
+    const estMB = (tiles.length * 20 / 1024).toFixed(1);
+    const proceed = confirm(`Karte für die Route herunterladen?\n\n${tiles.length} Kacheln, ca. ${estMB} MB.\nKann je nach Verbindung einige Minuten dauern.`);
+    if(!proceed) return;
+
+    downloadCancelled = false;
+    showDownloadPanel();
+    updateDownloadProgress(0, tiles.length);
+
+    let idx = 0, done = 0, failed = 0;
+    async function worker(){
+      while(idx < tiles.length){
+        if(downloadCancelled) return;
+        const url = tiles[idx++];
+        try{ await fetch(url, { mode:'no-cors' }); }
+        catch(e){ failed++; }
+        done++;
+        updateDownloadProgress(done, tiles.length);
+        await new Promise(r => setTimeout(r, 30));
+      }
+    }
+
+    await Promise.all(Array.from({length:6}, worker));
+
+    if(!downloadCancelled){
+      hideDownloadPanel();
+      showBanner(`<strong>Fertig:</strong> Karte für die Route ist offline verfügbar (${tiles.length - failed} von ${tiles.length} Kacheln).`);
+      setTimeout(hideBanner, 6000);
+    }
+  });
+
+  document.getElementById('cancelDownloadBtn').addEventListener('click', function(){
+    downloadCancelled = true;
+    hideDownloadPanel();
+  });
 
 })();
 </script>
