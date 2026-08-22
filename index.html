@@ -79,39 +79,31 @@
   #map{position:absolute; inset:0; background:#0f1114;}
   .leaflet-control-zoom{margin-top:calc(10px + env(safe-area-inset-top)) !important;}
 
-  /* --- Banner (errors / hints) --- */
-  #banner{
+  /* --- Map overlays (banner / download / turn) ---
+     These always sit on a fixed dark card over the map, in both themes, so their
+     colors are hardcoded rather than tied to --text/--text-dim/--sign-yellow —
+     those flip to dark values in the light day theme and would be unreadable here. */
+  #banner, #downloadPanel, #turnBanner{
     position:absolute; top:10px; left:10px; right:10px;
-    background:rgba(28,32,36,0.96); border:1px solid var(--warn-red);
-    color:var(--text); padding:10px 12px; border-radius:10px;
-    font-size:13px; line-height:1.4; display:none; z-index:900;
+    background:rgba(28,32,36,0.96);
+    color:#eef0ee; border-radius:10px;
+    font-size:13px; display:none;
   }
+  #banner{ border:1px solid #e2543f; padding:10px 12px; line-height:1.4; z-index:900; }
   #banner.show{display:block;}
-  #banner strong{color:var(--warn-red);}
+  #banner strong{color:#ff9a8a;}
 
-  /* --- Download progress panel --- */
-  #downloadPanel{
-    position:absolute; top:10px; left:10px; right:10px;
-    background:rgba(28,32,36,0.96); border:1px solid var(--sign-yellow);
-    color:var(--text); padding:12px; border-radius:10px;
-    font-size:13px; display:none; z-index:950;
-  }
+  #downloadPanel{ border:1px solid #f2c14e; padding:12px; z-index:950; }
   #downloadPanel.show{display:block;}
   #downloadText{margin-bottom:8px; font-weight:700;}
-  #downloadBarTrack{height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin-bottom:10px;}
-  #downloadBarFill{height:100%; width:0%; background:var(--sign-yellow);}
+  #downloadBarTrack{height:6px; border-radius:3px; background:#2c3236; overflow:hidden; margin-bottom:10px;}
+  #downloadBarFill{height:100%; width:0%; background:#f2c14e;}
 
-  /* --- Next-turn banner (shown as a map overlay while navigating) --- */
-  #turnBanner{
-    position:absolute; top:10px; left:10px; right:10px;
-    background:rgba(28,32,36,0.96); border:1px solid var(--sign-yellow);
-    color:var(--text); padding:10px 14px; border-radius:10px;
-    display:none; align-items:center; gap:14px; z-index:910;
-  }
+  #turnBanner{ border:1px solid #f2c14e; padding:10px 14px; align-items:center; gap:14px; z-index:910; }
   #turnBanner.show{display:flex;}
-  #turnArrowIcon{width:34px; height:34px; flex-shrink:0; color:var(--sign-yellow); transition:transform 0.3s ease;}
+  #turnArrowIcon{width:34px; height:34px; flex-shrink:0; color:#f2c14e; transition:transform 0.3s ease;}
   #turnBannerDist{font-size:20px; font-weight:800; line-height:1.1;}
-  #turnBannerLabel{font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.04em;}
+  #turnBannerLabel{font-size:12px; color:#a9b0aa; text-transform:uppercase; letter-spacing:0.04em;}
 
   /* --- Floating controls on map --- */
   #mapControls{
@@ -152,9 +144,13 @@
     background:var(--panel); border-top:1px solid var(--line);
     padding:14px 16px calc(14px + env(safe-area-inset-bottom));
     display:none; z-index:1000;
-    max-height:60vh; overflow-y:auto;
+    max-height:48vh; overflow-y:auto;
   }
   #dashboard.show{display:block;}
+  /* While actively navigating, keep the panel small so the map stays visible;
+     the topbar (file/profile pickers, not needed mid-ride) is hidden entirely. */
+  body.nav-active #topbar{display:none;}
+  body.nav-active #dashboard{max-height:30vh;}
   #placeholder{
     padding:16px; text-align:center; color:var(--text-dim); font-size:13px;
   }
@@ -405,6 +401,7 @@
   window.addEventListener('load', () => setTimeout(() => map.invalidateSize(), 300));
   window.addEventListener('resize', () => map.invalidateSize());
   window.addEventListener('orientationchange', () => setTimeout(() => map.invalidateSize(), 300));
+  document.addEventListener('fullscreenchange', () => setTimeout(() => map.invalidateSize(), 100));
 
   let routeLayer = null;
   let wptMarkers = [];
@@ -426,6 +423,18 @@
   // no-ops if the leaflet-rotate plugin failed to load.
   function setMapBearing(deg){
     if(typeof map.setBearing === 'function') map.setBearing(deg);
+  }
+
+  // Fullscreen while navigating, to reclaim the browser chrome for the map too.
+  // Not supported everywhere (notably older iOS Safari) — fails silently there.
+  function enterFullscreen(){
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if(req) req.call(el).catch(() => {});
+  }
+  function exitFullscreen(){
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if(exit && (document.fullscreenElement || document.webkitFullscreenElement)) exit.call(document).catch(() => {});
   }
 
   // voice-announcement state (reset per route)
@@ -518,7 +527,7 @@
 
   function fmtDist(m){
     if(m < 0) m = 0;
-    return m < 1000 ? Math.round(m) + ' m' : (m/1000).toFixed(m < 10000 ? 2 : 1) + ' km';
+    return m < 1000 ? Math.round(m / 10) * 10 + ' m' : (m/1000).toFixed(m < 10000 ? 2 : 1) + ' km';
   }
 
   function computeNavZoom(kmh){
@@ -899,6 +908,9 @@
     document.getElementById('navContent').style.display = 'block';
     document.getElementById('fileLabel').style.pointerEvents = 'none';
     document.getElementById('fileLabel').style.opacity = '0.5';
+    document.body.classList.add('nav-active');
+    enterFullscreen();
+    setTimeout(() => map.invalidateSize(), 100);
 
     navStartTime = Date.now();
     recordedTrack = [];
@@ -924,6 +936,9 @@
     setMapBearing(0);
     document.getElementById('fileLabel').style.pointerEvents = 'auto';
     document.getElementById('fileLabel').style.opacity = '1';
+    document.body.classList.remove('nav-active');
+    exitFullscreen();
+    setTimeout(() => map.invalidateSize(), 100);
   }
 
   function updateTripStats(){
