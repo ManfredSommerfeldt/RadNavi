@@ -356,6 +356,13 @@
     attribution:'&copy; OpenStreetMap contributors'
   }).addTo(map);
 
+  // Mobile browsers (esp. iOS "Add to Home Screen") can settle their viewport
+  // height slightly after first paint, leaving Leaflet with a stale container
+  // size — keep it in sync so the map isn't broken/blank on first load.
+  window.addEventListener('load', () => setTimeout(() => map.invalidateSize(), 300));
+  window.addEventListener('resize', () => map.invalidateSize());
+  window.addEventListener('orientationchange', () => setTimeout(() => map.invalidateSize(), 300));
+
   let routeLayer = null;
   let wptMarkers = [];
   let trackPoints = [];   // [{lat,lon}]
@@ -665,6 +672,7 @@
 
     const latlngs = trackPoints.map(p => [p.lat, p.lon]);
     routeLayer = L.polyline(latlngs, { color:'#4f9d69', weight:5, opacity:0.85 }).addTo(map);
+    map.invalidateSize();
     map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
 
     waypoints.forEach(w => {
@@ -732,6 +740,16 @@
   document.getElementById('startBtn').addEventListener('click', startNav);
   document.getElementById('stopBtn').addEventListener('click', stopNav);
 
+  // Show the rider's own position on the map as soon as the app opens, independent
+  // of whether a route is loaded or "Navigation starten" was pressed.
+  function startLocationWatch(){
+    if(!navigator.geolocation || !window.isSecureContext || watchId !== null) return;
+    watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
+      enableHighAccuracy:true, maximumAge:2000, timeout:15000
+    });
+  }
+  startLocationWatch();
+
   function startNav(){
     if(!navigator.geolocation){
       showBanner('<strong>Kein GPS verfügbar:</strong> Dieser Browser unterstützt keine Standortermittlung.');
@@ -758,14 +776,11 @@
     updateTripStats();
     tripTimerInterval = setInterval(updateTripStats, 1000);
 
-    watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
-      enableHighAccuracy:true, maximumAge:2000, timeout:15000
-    });
+    startLocationWatch(); // no-op if already running, otherwise (re)starts it
   }
 
   function stopNav(){
-    if(watchId !== null) navigator.geolocation.clearWatch(watchId);
-    watchId = null;
+    navStartTime = null; // ends guidance/recording; the position watch itself keeps running
     if('speechSynthesis' in window) window.speechSynthesis.cancel();
     if(tripTimerInterval) clearInterval(tripTimerInterval);
     tripTimerInterval = null;
@@ -807,6 +822,7 @@
     const icon = L.divIcon({ className:'', html, iconSize:[20,20], iconAnchor:[10,10] });
     if(!userMarker){
       userMarker = L.marker([p.lat, p.lon], { icon, zIndexOffset:1000 }).addTo(map);
+      map.invalidateSize();
     }else{
       userMarker.setLatLng([p.lat, p.lon]);
       userMarker.setIcon(icon);
@@ -826,18 +842,19 @@
 
     document.getElementById('statSpeed').textContent = kmh != null ? kmh.toFixed(1) : '–';
 
+    // marker + follow above run for every fix; guidance below only while navigating
+    if(!navStartTime) return;
+
     // record the actually-ridden track (independent of route matching) for GPX export
-    if(navStartTime){
-      const moved = lastRecordedPoint ? haversine(lastRecordedPoint, p) : Infinity;
-      if(moved >= 3){
-        recordedDistance += lastRecordedPoint ? moved : 0;
-        recordedTrack.push({ lat:p.lat, lon:p.lon, ele: pos.coords.altitude, time: new Date().toISOString() });
-        lastRecordedPoint = p;
-        document.getElementById('recordingInfo').textContent = 'Aufzeichnung: ' + fmtDist(recordedDistance);
-        document.getElementById('exportBtn').disabled = recordedTrack.length < 2;
-      }
-      updateTripStats();
+    const moved = lastRecordedPoint ? haversine(lastRecordedPoint, p) : Infinity;
+    if(moved >= 3){
+      recordedDistance += lastRecordedPoint ? moved : 0;
+      recordedTrack.push({ lat:p.lat, lon:p.lon, ele: pos.coords.altitude, time: new Date().toISOString() });
+      lastRecordedPoint = p;
+      document.getElementById('recordingInfo').textContent = 'Aufzeichnung: ' + fmtDist(recordedDistance);
+      document.getElementById('exportBtn').disabled = recordedTrack.length < 2;
     }
+    updateTripStats();
 
     if(trackPoints.length < 2) return;
 
