@@ -150,7 +150,7 @@
   /* While actively navigating, keep the panel small so the map stays visible;
      the topbar (file/profile pickers, not needed mid-ride) is hidden entirely. */
   body.nav-active #topbar{display:none;}
-  body.nav-active #dashboard{max-height:30vh;}
+  body.nav-active #dashboard{max-height:26vh;}
   #placeholder{
     padding:16px; text-align:center; color:var(--text-dim); font-size:13px;
   }
@@ -164,14 +164,9 @@
   .stat-sub{display:flex; flex-direction:column; align-items:flex-start;}
   .stat-sub .stat-value{font-size:18px; font-weight:700;}
   .stat-sub .stat-label{font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em;}
-  #compass{
-    margin-left:auto; display:flex; flex-direction:column; align-items:center; gap:2px;
-  }
-  #compassArrow{
-    width:22px; height:22px; transition:transform 0.3s ease;
-    color:var(--route-green);
-  }
-  #compassLabel{font-size:10px; color:var(--text-dim); font-weight:700;}
+
+  #tripSummary{display:none;}
+  #tripSummary.show{display:block;}
 
   #nextWpt{
     font-size:12.5px; color:var(--text-dim); margin-bottom:10px; min-height:16px;
@@ -193,10 +188,9 @@
 
   /* --- Recording / GPX export --- */
   #recordingRow{
-    display:none; align-items:center; justify-content:space-between; gap:10px;
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
     margin-top:10px; font-size:12px; color:var(--text-dim);
   }
-  #recordingRow.show{display:flex;}
 
   #offRouteBanner{
     display:none; background:rgba(226,84,63,0.15); border:1px solid var(--warn-red);
@@ -204,26 +198,6 @@
     margin-bottom:10px;
   }
   #offRouteBanner.show{display:block;}
-
-  /* --- Trail-blaze progress bar (signature element) --- */
-  #trail{position:relative; height:34px;}
-  #trailTrack{
-    position:absolute; top:14px; left:0; right:0; height:6px;
-    background:repeating-linear-gradient(90deg, var(--line) 0 8px, transparent 8px 12px);
-    border-radius:3px;
-  }
-  #trailFill{
-    position:absolute; top:14px; left:0; height:6px;
-    background:var(--route-green); border-radius:3px; width:0%;
-  }
-  .trail-wpt{
-    position:absolute; top:9px; width:2px; height:16px; background:var(--sign-yellow);
-  }
-  #trailRider{
-    position:absolute; top:0px; width:18px; height:18px; margin-left:-9px;
-    background:var(--sign-yellow); border-radius:50% 50% 50% 0; transform:rotate(-45deg);
-    border:2px solid #221a06; left:0%;
-  }
 
   /* --- Settings row (voice toggle) --- */
   #settingsRow{
@@ -301,6 +275,23 @@
         </svg>
       </div>
 
+      <div id="tripSummary">
+        <div class="stat-row2">
+          <div class="stat-sub">
+            <div class="stat-value" id="statTime">–</div>
+            <div class="stat-label">Fahrtzeit</div>
+          </div>
+          <div class="stat-sub">
+            <div class="stat-value" id="statAvgSpeed">–</div>
+            <div class="stat-label">Ø km/h</div>
+          </div>
+        </div>
+        <div id="recordingRow">
+          <span id="recordingInfo">Aufzeichnung: 0 m</span>
+          <button class="btn btn-ghost" id="exportBtn" disabled>GPX exportieren</button>
+        </div>
+      </div>
+
       <button class="btn btn-primary btn-block" id="startBtn">Navigation starten</button>
     </div>
 
@@ -314,39 +305,11 @@
           <div class="stat-value" id="statSpeed">–</div>
           <div class="stat-label">km/h</div>
         </div>
-        <div id="compass">
-          <svg id="compassArrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M12 2 L12 22 M12 2 L7 9 M12 2 L17 9" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <div id="compassLabel">–</div>
-        </div>
-      </div>
-
-      <div class="stat-row2">
-        <div class="stat-sub">
-          <div class="stat-value" id="statTime">–</div>
-          <div class="stat-label">Fahrtzeit</div>
-        </div>
-        <div class="stat-sub">
-          <div class="stat-value" id="statAvgSpeed">–</div>
-          <div class="stat-label">Ø km/h</div>
-        </div>
       </div>
 
       <div id="offRouteBanner">⚠ Du bist <span id="offRouteDist">–</span> von der Route entfernt</div>
 
       <div id="nextWpt">&nbsp;</div>
-
-      <div id="trail">
-        <div id="trailTrack"></div>
-        <div id="trailFill"></div>
-        <div id="trailRider"></div>
-      </div>
-
-      <div id="recordingRow">
-        <span id="recordingInfo">Aufzeichnung: 0 m</span>
-        <button class="btn btn-ghost" id="exportBtn" disabled>GPX exportieren</button>
-      </div>
 
       <button class="btn btn-danger btn-block" id="stopBtn">Stopp</button>
     </div>
@@ -478,11 +441,6 @@
     const y = Math.sin(dLon) * Math.cos(la2);
     const x = Math.cos(la1)*Math.sin(la2) - Math.sin(la1)*Math.cos(la2)*Math.cos(dLon);
     return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-  }
-
-  function cardinal(deg){
-    const dirs = ['N','NO','O','SO','S','SW','W','NW'];
-    return dirs[Math.round(deg / 45) % 8];
   }
 
   function projectOnSegment(p, a, b){
@@ -724,8 +682,8 @@
     lastRecordedPoint = null;
     document.getElementById('statTime').textContent = '–';
     document.getElementById('statAvgSpeed').textContent = '–';
-    document.getElementById('recordingRow').classList.remove('show');
     document.getElementById('exportBtn').disabled = true;
+    document.getElementById('tripSummary').classList.remove('show');
     document.getElementById('turnBanner').classList.remove('show');
     setMapBearing(0);
 
@@ -912,11 +870,21 @@
     enterFullscreen();
     setTimeout(() => map.invalidateSize(), 100);
 
+    // jump straight to the current position at a navigation zoom level, instead of
+    // waiting for the next GPS fix's regular (throttled) speed-adaptive zoom-in
+    followMode = true;
+    document.getElementById('followBtn').classList.add('active');
+    if(lastFix){
+      programmaticZoom = true;
+      map.setView([lastFix.lat, lastFix.lon], computeNavZoom(null));
+      programmaticZoom = false;
+      lastZoomChange = Date.now();
+    }
+
     navStartTime = Date.now();
     recordedTrack = [];
     recordedDistance = 0;
     lastRecordedPoint = null;
-    document.getElementById('recordingRow').classList.add('show');
     document.getElementById('recordingInfo').textContent = 'Aufzeichnung: 0 m';
     document.getElementById('exportBtn').disabled = true;
     updateTripStats();
@@ -932,6 +900,7 @@
     tripTimerInterval = null;
     document.getElementById('navContent').style.display = 'none';
     document.getElementById('routeSummary').classList.add('show');
+    if(recordedTrack.length >= 2) document.getElementById('tripSummary').classList.add('show');
     document.getElementById('turnBanner').classList.remove('show');
     setMapBearing(0);
     document.getElementById('fileLabel').style.pointerEvents = 'auto';
@@ -1044,12 +1013,6 @@
       wasOffRoute = false;
     }
 
-    // compass: bearing to a lookahead point ~30m further along the route
-    const lookahead = pointAtDistance(Math.min(nearest.traveled + 30, totalDist));
-    const brg = bearing(p, lookahead);
-    document.getElementById('compassArrow').style.transform = `rotate(${brg}deg)`;
-    document.getElementById('compassLabel').textContent = cardinal(brg) + ' ' + Math.round(brg) + '°';
-
     // next turn: big arrow banner on the map + proximity voice ("in 100 Metern links abbiegen")
     const upcomingTurn = turnPoints.find(t => t.cumDist > nearest.traveled);
     const turnBanner = document.getElementById('turnBanner');
@@ -1106,21 +1069,6 @@
       announcedArrival = true;
       speak('Ziel erreicht.');
     }
-
-    // trail-blaze progress bar
-    const pct = Math.max(0, Math.min(100, (nearest.traveled / totalDist) * 100));
-    document.getElementById('trailFill').style.width = pct + '%';
-    document.getElementById('trailRider').style.left = pct + '%';
-
-    const trailEl = document.getElementById('trail');
-    trailEl.querySelectorAll('.trail-wpt').forEach(el => el.remove());
-    matchedWpts.forEach(w => {
-      const wpct = (w.cumDist / totalDist) * 100;
-      const tick = document.createElement('div');
-      tick.className = 'trail-wpt';
-      tick.style.left = wpct + '%';
-      trailEl.appendChild(tick);
-    });
   }
 
   // ---------- Offline map download (uses the service worker's tile cache) ----------
