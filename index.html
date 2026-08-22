@@ -452,10 +452,25 @@
   let wakeLock = null;
   const noSleepVideo = document.getElementById('noSleepVideo');
   async function requestWakeLock(){
-    noSleepVideo.play().catch(() => {});
+    const videoResult = await noSleepVideo.play().then(() => 'läuft').catch(e => 'blockiert (' + e.name + ')');
+
+    let lockResult;
     if('wakeLock' in navigator){
-      try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(e){}
+      try{
+        wakeLock = await navigator.wakeLock.request('screen');
+        lockResult = 'aktiv';
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }catch(e){
+        lockResult = 'Fehler (' + e.name + ': ' + e.message + ')';
+      }
+    }else{
+      lockResult = 'nicht unterstützt';
     }
+
+    // Temporary diagnostic so we can see, on a real device, which of the two
+    // mechanisms actually engaged — remove once wake-lock behaviour is confirmed working.
+    showBanner('Wake Lock: ' + lockResult + ' &middot; Video-Fallback: ' + videoResult);
+    setTimeout(hideBanner, 6000);
   }
   function releaseWakeLock(){
     if(wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
