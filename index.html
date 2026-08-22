@@ -252,6 +252,7 @@
     <div id="mapControls">
       <div class="fab active" id="followBtn" title="Karte folgt Position">◎</div>
       <div class="fab" id="fitBtn" title="Ganze Route zeigen">⤢</div>
+      <div class="fab" id="routeBtn" title="Ziel auf der Karte wählen und Route berechnen">🎯</div>
       <div class="fab" id="offlineBtn" title="Karte für Route offline speichern">⭳</div>
     </div>
   </div>
@@ -375,6 +376,8 @@
   let lastFix = null;
   let lastZoomChange = 0;
   let programmaticZoom = false; // true while WE change the view, so user zoom detection ignores it
+  let pickingDestination = false;
+  let destMarker = null;
 
   // voice-announcement state (reset per route)
   let voiceEnabled = true;
@@ -670,6 +673,7 @@
     if(routeLayer) map.removeLayer(routeLayer);
     wptMarkers.forEach(m => map.removeLayer(m));
     wptMarkers = [];
+    if(destMarker){ map.removeLayer(destMarker); destMarker = null; }
 
     const latlngs = trackPoints.map(p => [p.lat, p.lon]);
     routeLayer = L.polyline(latlngs, { color:'#4f9d69', weight:5, opacity:0.85 }).addTo(map);
@@ -756,6 +760,55 @@
     followMode = false;
     document.getElementById('followBtn').classList.remove('active');
   });
+
+  // ---------- Route to a chosen destination (via BRouter) ----------
+  document.getElementById('routeBtn').addEventListener('click', function(){
+    pickingDestination = !pickingDestination;
+    this.classList.toggle('active', pickingDestination);
+    map.getContainer().style.cursor = pickingDestination ? 'crosshair' : '';
+    if(pickingDestination){
+      showBanner('Tippe auf die Karte, um dein Ziel zu wählen.');
+    }else{
+      hideBanner();
+    }
+  });
+
+  map.on('click', function(e){
+    if(!pickingDestination) return;
+    pickingDestination = false;
+    document.getElementById('routeBtn').classList.remove('active');
+    map.getContainer().style.cursor = '';
+    requestBRouterRoute(e.latlng);
+  });
+
+  async function requestBRouterRoute(latlng){
+    if(!lastFix){
+      showBanner('<strong>Kein Standort:</strong> Warte, bis dein GPS-Standort ermittelt wurde, bevor du ein Ziel wählst.');
+      return;
+    }
+
+    showBanner('Route wird berechnet…');
+    try{
+      const url = 'https://brouter.de/brouter?lonlats=' +
+        lastFix.lon + ',' + lastFix.lat + '|' + latlng.lng + ',' + latlng.lat +
+        '&profile=trekking&alternativeidx=0&format=gpx';
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('Routing-Server antwortete mit Fehler ' + res.status);
+      const gpxText = await res.text();
+      const { points, waypoints } = parseGPX(gpxText);
+      loadRoute(points, waypoints); // also clears any previous destination marker
+      document.getElementById('fileLabel').textContent = 'Berechnete Route';
+
+      const icon = L.divIcon({
+        className:'', html:'<div class="wpt-pin" style="border-color:var(--warn-red); color:var(--warn-red);"><span>⚑</span></div>',
+        iconSize:[22,22], iconAnchor:[11,20]
+      });
+      destMarker = L.marker([latlng.lat, latlng.lng], { icon }).addTo(map);
+      hideBanner();
+    }catch(err){
+      showBanner('<strong>Route konnte nicht berechnet werden:</strong> ' + err.message);
+    }
+  }
 
   // ---------- Navigation ----------
   document.getElementById('startBtn').addEventListener('click', startNav);
