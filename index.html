@@ -83,7 +83,7 @@
      These always sit on a fixed dark card over the map, in both themes, so their
      colors are hardcoded rather than tied to --text/--text-dim/--sign-yellow —
      those flip to dark values in the light day theme and would be unreadable here. */
-  #banner, #downloadPanel, #turnBanner, #wakeLockDiag{
+  #banner, #downloadPanel, #turnBanner{
     position:absolute; top:10px; left:10px; right:10px;
     background:rgba(28,32,36,0.96);
     color:#eef0ee; border-radius:10px;
@@ -95,12 +95,6 @@
 
   #downloadPanel{ border:1px solid #f2c14e; padding:12px; z-index:950; }
   #downloadPanel.show{display:block;}
-
-  /* Temporary wake-lock diagnostic — unlike #banner, not cleared by every GPS fix,
-     and stays until the user dismisses it so there's time to read/screenshot it. */
-  #wakeLockDiag{ border:1px solid #f2c14e; padding:12px; z-index:970; }
-  #wakeLockDiag.show{display:block;}
-  #wakeLockDiagText{margin-bottom:8px; line-height:1.4;}
   #downloadText{margin-bottom:8px; font-weight:700;}
   #downloadBarTrack{height:6px; border-radius:3px; background:#2c3236; overflow:hidden; margin-bottom:10px;}
   #downloadBarFill{height:100%; width:0%; background:#f2c14e;}
@@ -267,11 +261,6 @@
     <div id="map"></div>
 
     <div id="banner"></div>
-
-    <div id="wakeLockDiag">
-      <div id="wakeLockDiagText"></div>
-      <button class="btn btn-ghost" id="wakeLockDiagCloseBtn">Schließen</button>
-    </div>
 
     <div id="turnBanner">
       <svg id="turnArrowIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -458,37 +447,21 @@
   // re-acquires the lock once the screen comes back on so it recovers from that too.
   //
   // Runs both the real Wake Lock API AND the silent-video fallback at once: some
-  // browsers (e.g. Opera) report navigator.wakeLock as supported but don't actually
-  // keep the screen on, so feature-detection alone isn't reliable here.
+  // browsers (confirmed: Opera on Android) actively deny navigator.wakeLock via their
+  // own battery-saving policy (NotAllowedError), which no client-side code can override
+  // — Chrome on the same device grants it fine. The video fallback is kept as a no-cost
+  // safety net for browsers where it does help (e.g. iOS Safari).
   let wakeLock = null;
   const noSleepVideo = document.getElementById('noSleepVideo');
   async function requestWakeLock(){
-    const videoResult = await noSleepVideo.play().then(() => 'läuft').catch(e => 'blockiert (' + e.name + ')');
-
-    let lockResult;
+    noSleepVideo.play().catch(() => {});
     if('wakeLock' in navigator){
       try{
         wakeLock = await navigator.wakeLock.request('screen');
-        lockResult = 'aktiv';
         wakeLock.addEventListener('release', () => { wakeLock = null; });
-      }catch(e){
-        lockResult = 'Fehler (' + e.name + ': ' + e.message + ')';
-      }
-    }else{
-      lockResult = 'nicht unterstützt';
+      }catch(e){}
     }
-
-    // Temporary diagnostic so we can see, on a real device, which of the two
-    // mechanisms actually engaged — remove once wake-lock behaviour is confirmed working.
-    // Uses its own overlay (not #banner) since onPosition() hides #banner on every GPS
-    // fix, which was wiping this out almost instantly.
-    document.getElementById('wakeLockDiagText').textContent =
-      'Wake Lock: ' + lockResult + ' · Video-Fallback: ' + videoResult;
-    document.getElementById('wakeLockDiag').classList.add('show');
   }
-  document.getElementById('wakeLockDiagCloseBtn').addEventListener('click', function(){
-    document.getElementById('wakeLockDiag').classList.remove('show');
-  });
   function releaseWakeLock(){
     if(wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
     noSleepVideo.pause();
