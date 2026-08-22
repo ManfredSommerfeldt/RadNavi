@@ -301,7 +301,7 @@
     <div id="routeSearchPanel">
       <div id="routeSearchHeader">
         <input type="text" id="routeSearchInput" placeholder="Ort oder Route, z. B. Essen, Ruhrtalradweg…">
-        <button class="btn btn-ghost" id="routeSearchCloseBtn">✕</button>
+        <button class="btn btn-ghost" id="routeSearchCloseBtn" title="Suchbegriff löschen / Suche schließen">✕</button>
       </div>
       <div id="routeSearchResults"></div>
     </div>
@@ -1114,8 +1114,17 @@
     document.getElementById('routeSearchInput').focus();
     if(!document.getElementById('routeSearchInput').value.trim()) showRecents();
   });
+  // Clears the search term first (like a normal search-bar X); only closes the panel
+  // once the field is already empty, so clearing and dismissing don't fight each other.
   document.getElementById('routeSearchCloseBtn').addEventListener('click', function(){
-    document.getElementById('routeSearchPanel').classList.remove('show');
+    const input = document.getElementById('routeSearchInput');
+    if(input.value.trim().length > 0){
+      input.value = '';
+      input.focus();
+      showRecents();
+    }else{
+      document.getElementById('routeSearchPanel').classList.remove('show');
+    }
   });
 
   let routeSearchTimer = null;
