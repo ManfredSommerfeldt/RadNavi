@@ -125,7 +125,7 @@
   }
   .nav-toggle-start{background:var(--route-green); color:#0c2015;}
   .nav-toggle-stop{background:var(--warn-red); color:#2a0a05;}
-  #navToggleBtn{display:none;}
+  #navToggleBtn{margin-left:auto;}
 
   /* --- User marker --- */
   .user-dot{
@@ -163,6 +163,8 @@
     padding:16px; text-align:center; color:var(--text-dim); font-size:13px;
   }
   #placeholder.hide{display:none;}
+  #routeHeader{display:none;}
+  #routeHeader.show{display:block;}
   #routeSummary{display:none;}
   #routeSummary.show{display:block;}
   .stat-row{display:flex; align-items:flex-end; gap:22px; margin-bottom:10px;}
@@ -260,21 +262,27 @@
       <div class="fab" id="fitBtn" title="Ganze Route zeigen">⤢</div>
       <div class="fab" id="routeBtn" title="Ziel auf der Karte wählen und Route berechnen">🎯</div>
       <div class="fab" id="offlineBtn" title="Karte für Route offline speichern">⭳</div>
-      <div class="fab fab-text nav-toggle-start" id="navToggleBtn" title="Navigation starten/stoppen">Start</div>
     </div>
   </div>
 
   <div id="dashboard">
     <div id="placeholder">Lade eine GPX-Datei, um die Route auf der Karte zu sehen.</div>
 
-    <div id="routeSummary">
+    <div id="routeHeader">
       <div class="stat-row">
         <div class="stat-main">
-          <div class="stat-value" id="summaryDistance">–</div>
-          <div class="stat-label">Streckenlänge</div>
+          <div class="stat-value" id="mainDistance">–</div>
+          <div class="stat-label" id="mainDistanceLabel">Streckenlänge</div>
         </div>
+        <div class="stat-sub" id="speedStat" style="display:none;">
+          <div class="stat-value" id="statSpeed">–</div>
+          <div class="stat-label">km/h</div>
+        </div>
+        <div class="fab-text nav-toggle-start" id="navToggleBtn" title="Navigation starten/stoppen">Start</div>
       </div>
+    </div>
 
+    <div id="routeSummary">
       <div id="elevPanel">
         <div id="elevHeader"><span>Höhenprofil</span><span id="elevStats"></span></div>
         <svg id="elevSvg" viewBox="0 0 300 54" preserveAspectRatio="none">
@@ -307,17 +315,6 @@
     </div>
 
     <div id="navContent" style="display:none;">
-      <div class="stat-row">
-        <div class="stat-main">
-          <div class="stat-value" id="statRemaining">–</div>
-          <div class="stat-label">Restdistanz</div>
-        </div>
-        <div class="stat-sub">
-          <div class="stat-value" id="statSpeed">–</div>
-          <div class="stat-label">km/h</div>
-        </div>
-      </div>
-
       <div id="offRouteBanner">⚠ Du bist <span id="offRouteDist">–</span> von der Route entfernt</div>
 
       <div id="nextWpt">&nbsp;</div>
@@ -712,13 +709,15 @@
       wptMarkers.push(m);
     });
 
-    document.getElementById('summaryDistance').textContent = fmtDist(totalDist);
+    document.getElementById('mainDistance').textContent = fmtDist(totalDist);
+    document.getElementById('mainDistanceLabel').textContent = 'Streckenlänge';
+    document.getElementById('speedStat').style.display = 'none';
 
     document.getElementById('placeholder').classList.add('hide');
     document.getElementById('navContent').style.display = 'none';
+    document.getElementById('routeHeader').classList.add('show');
     document.getElementById('routeSummary').classList.add('show');
     document.getElementById('offlineBtn').style.display = 'flex';
-    document.getElementById('navToggleBtn').style.display = 'flex';
     document.getElementById('dashboard').classList.add('show');
   }
 
@@ -867,6 +866,8 @@
 
     document.getElementById('routeSummary').classList.remove('show');
     document.getElementById('navContent').style.display = 'block';
+    document.getElementById('mainDistanceLabel').textContent = 'Restdistanz';
+    document.getElementById('speedStat').style.display = 'flex';
     document.getElementById('fileLabel').style.pointerEvents = 'none';
     document.getElementById('fileLabel').style.opacity = '0.5';
     document.body.classList.add('nav-active');
@@ -907,6 +908,9 @@
     tripTimerInterval = null;
     document.getElementById('navContent').style.display = 'none';
     document.getElementById('routeSummary').classList.add('show');
+    document.getElementById('mainDistanceLabel').textContent = 'Streckenlänge';
+    document.getElementById('mainDistance').textContent = fmtDist(totalDist);
+    document.getElementById('speedStat').style.display = 'none';
     document.getElementById('tripSummary').classList.add('show');
     document.getElementById('recordingRow').style.display = recordedTrack.length >= 2 ? 'flex' : 'none';
     document.getElementById('turnBanner').classList.remove('show');
@@ -1006,7 +1010,7 @@
     // progress along route
     const nearest = findNearestOnTrack(p);
     const remaining = totalDist - nearest.traveled;
-    document.getElementById('statRemaining').textContent = fmtDist(remaining);
+    document.getElementById('mainDistance').textContent = fmtDist(remaining);
 
     // off-route
     const offBanner = document.getElementById('offRouteBanner');
