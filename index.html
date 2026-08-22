@@ -107,7 +107,7 @@
 
   /* --- Named-route search panel --- */
   #routeSearchPanel{
-    position:absolute; top:10px; left:10px; right:10px; z-index:960;
+    position:absolute; bottom:12px; left:10px; right:10px; z-index:960;
     background:rgba(28,32,36,0.98); border:1px solid #f2c14e; border-radius:10px;
     display:none; max-height:70%; flex-direction:column; overflow:hidden;
   }
@@ -131,9 +131,9 @@
 
   /* --- Route-alternative picker (shown after routing to a tapped/searched point) --- */
   #routeAltPanel{
-    position:absolute; top:10px; left:10px; right:10px; z-index:965;
+    position:absolute; bottom:12px; left:10px; right:10px; z-index:965;
     background:rgba(28,32,36,0.98); border:1px solid #f2c14e; border-radius:10px;
-    display:none;
+    display:none; max-height:60%; overflow-y:auto;
   }
   #routeAltPanel.show{display:block;}
   #routeAltHeader{
@@ -1134,7 +1134,7 @@
     const routesPromise = fetch('https://cycling.waymarkedtrails.org/api/v1/list/search?limit=6&query=' + encodeURIComponent(query))
       .then(res => res.ok ? res.json() : { results: [] })
       .catch(() => ({ results: [] }));
-    const placesPromise = fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&accept-language=de&q=' + encodeURIComponent(query))
+    const placesPromise = fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&accept-language=de&addressdetails=1&q=' + encodeURIComponent(query))
       .then(res => res.ok ? res.json() : [])
       .catch(() => []);
 
@@ -1165,11 +1165,21 @@
       places.forEach(p => {
         const item = document.createElement('div');
         item.className = 'route-search-item';
-        const shortName = p.display_name.split(',').slice(0, 2).join(',');
-        item.innerHTML = '<span>' + shortName + '</span>';
+        // display_name puts the name first only for named POIs ("Burger Nerds, 429,
+        // Street, ..."); for plain addresses it starts with the house number instead.
+        // Building the label from the structured address fields instead avoids both
+        // showing a bare, context-less house number and dropping the street/city.
+        const addr = p.address || {};
+        const road = addr.road || addr.pedestrian || addr.footway || addr.cycleway || '';
+        const houseNr = addr.house_number || '';
+        const city = addr.city || addr.town || addr.village || addr.municipality || addr.county || '';
+        const primary = p.name || road || p.display_name.split(',')[0].trim();
+        const secondary = [road ? (road + (houseNr ? ' ' + houseNr : '')) : '', city]
+          .filter(Boolean).join(', ');
+        item.innerHTML = '<span>' + primary + '</span>' + (secondary && secondary !== primary ? '<span>' + secondary + '</span>' : '');
         item.addEventListener('click', function(){
           document.getElementById('routeSearchPanel').classList.remove('show');
-          routeToPoint(parseFloat(p.lat), parseFloat(p.lon), shortName);
+          routeToPoint(parseFloat(p.lat), parseFloat(p.lon), primary);
         });
         resultsEl.appendChild(item);
       });
