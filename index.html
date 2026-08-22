@@ -119,6 +119,14 @@
   .fab.active{background:var(--sign-yellow); color:#221a06; border-color:var(--sign-yellow);}
   #offlineBtn{display:none;}
 
+  .fab-text{
+    width:56px; border-radius:22px; font-size:12.5px; font-weight:800;
+    text-transform:uppercase; letter-spacing:0.03em; border:none;
+  }
+  .nav-toggle-start{background:var(--route-green); color:#0c2015;}
+  .nav-toggle-stop{background:var(--warn-red); color:#2a0a05;}
+  #navToggleBtn{display:none;}
+
   /* --- User marker --- */
   .user-dot{
     width:16px; height:16px; border-radius:50%;
@@ -199,16 +207,15 @@
   }
   #offRouteBanner.show{display:block;}
 
-  /* --- Settings row (voice toggle) --- */
-  #settingsRow{
-    display:none; align-items:center; gap:8px; margin-top:12px;
+  /* --- Recording opt-in toggle --- */
+  #recordToggleRow{
+    display:flex; align-items:center; gap:8px; margin-bottom:10px;
     font-size:13px; color:var(--text-dim);
   }
-  #settingsRow input[type=checkbox]{
+  #recordToggleRow input[type=checkbox]{
     width:18px; height:18px; accent-color:var(--sign-yellow);
   }
 
-  .btn-block{display:block; width:100%; margin-top:10px;}
 </style>
 </head>
 <body>
@@ -253,6 +260,7 @@
       <div class="fab" id="fitBtn" title="Ganze Route zeigen">⤢</div>
       <div class="fab" id="routeBtn" title="Ziel auf der Karte wählen und Route berechnen">🎯</div>
       <div class="fab" id="offlineBtn" title="Karte für Route offline speichern">⭳</div>
+      <div class="fab fab-text nav-toggle-start" id="navToggleBtn" title="Navigation starten/stoppen">Start</div>
     </div>
   </div>
 
@@ -275,6 +283,11 @@
         </svg>
       </div>
 
+      <label id="recordToggleRow">
+        <input type="checkbox" id="recordToggle">
+        <span>⏺ Strecke aufzeichnen (für späteren GPX-Export)</span>
+      </label>
+
       <div id="tripSummary">
         <div class="stat-row2">
           <div class="stat-sub">
@@ -291,8 +304,6 @@
           <button class="btn btn-ghost" id="exportBtn" disabled>GPX exportieren</button>
         </div>
       </div>
-
-      <button class="btn btn-primary btn-block" id="startBtn">Navigation starten</button>
     </div>
 
     <div id="navContent" style="display:none;">
@@ -310,14 +321,7 @@
       <div id="offRouteBanner">⚠ Du bist <span id="offRouteDist">–</span> von der Route entfernt</div>
 
       <div id="nextWpt">&nbsp;</div>
-
-      <button class="btn btn-danger btn-block" id="stopBtn">Stopp</button>
     </div>
-
-    <label id="settingsRow">
-      <input type="checkbox" id="voiceToggle" checked>
-      <span>🔊 Sprachansagen (Route verlassen, Wegpunkte, Ziel)</span>
-    </label>
   </div>
 
 </div>
@@ -401,7 +405,6 @@
   }
 
   // voice-announcement state (reset per route)
-  let voiceEnabled = true;
   let wasOffRoute = false;
   let lastOffRouteAnnounce = 0;
   let announcedNear = new Set();
@@ -422,6 +425,7 @@
   let recordedTrack = [];
   let recordedDistance = 0;
   let lastRecordedPoint = null;
+  let recordingEnabled = false; // only records GPX points if opted in before "Start"
 
   // ---------- Geo helpers ----------
   const toRad = d => d * Math.PI / 180;
@@ -598,19 +602,18 @@
     panel.classList.add('show');
   }
 
-  // ---------- Voice ----------
+  // ---------- Voice (always on) ----------
   function speak(text){
-    if(!voiceEnabled || !('speechSynthesis' in window)) return;
+    if(!('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'de-DE';
     window.speechSynthesis.speak(u);
   }
 
-  document.getElementById('voiceToggle').addEventListener('change', function(){
-    voiceEnabled = this.checked;
-    if(voiceEnabled) speak('Sprachausgabe aktiviert');
-    else if('speechSynthesis' in window) window.speechSynthesis.cancel();
+  // ---------- Recording opt-in ----------
+  document.getElementById('recordToggle').addEventListener('change', function(){
+    recordingEnabled = this.checked;
   });
 
   // ---------- GPX parsing ----------
@@ -714,10 +717,9 @@
     document.getElementById('placeholder').classList.add('hide');
     document.getElementById('navContent').style.display = 'none';
     document.getElementById('routeSummary').classList.add('show');
-    document.getElementById('settingsRow').style.display = 'flex';
     document.getElementById('offlineBtn').style.display = 'flex';
+    document.getElementById('navToggleBtn').style.display = 'flex';
     document.getElementById('dashboard').classList.add('show');
-    document.getElementById('startBtn').disabled = false;
   }
 
   // ---------- File input ----------
@@ -839,8 +841,9 @@
   }
 
   // ---------- Navigation ----------
-  document.getElementById('startBtn').addEventListener('click', startNav);
-  document.getElementById('stopBtn').addEventListener('click', stopNav);
+  document.getElementById('navToggleBtn').addEventListener('click', function(){
+    if(navStartTime) stopNav(); else startNav();
+  });
 
   // Show the rider's own position on the map as soon as the app opens, independent
   // of whether a route is loaded or "Navigation starten" was pressed.
@@ -867,6 +870,10 @@
     document.getElementById('fileLabel').style.pointerEvents = 'none';
     document.getElementById('fileLabel').style.opacity = '0.5';
     document.body.classList.add('nav-active');
+    const navToggleBtn = document.getElementById('navToggleBtn');
+    navToggleBtn.textContent = 'Stop';
+    navToggleBtn.classList.remove('nav-toggle-start');
+    navToggleBtn.classList.add('nav-toggle-stop');
     enterFullscreen();
     setTimeout(() => map.invalidateSize(), 100);
 
@@ -900,12 +907,17 @@
     tripTimerInterval = null;
     document.getElementById('navContent').style.display = 'none';
     document.getElementById('routeSummary').classList.add('show');
-    if(recordedTrack.length >= 2) document.getElementById('tripSummary').classList.add('show');
+    document.getElementById('tripSummary').classList.add('show');
+    document.getElementById('recordingRow').style.display = recordedTrack.length >= 2 ? 'flex' : 'none';
     document.getElementById('turnBanner').classList.remove('show');
     setMapBearing(0);
     document.getElementById('fileLabel').style.pointerEvents = 'auto';
     document.getElementById('fileLabel').style.opacity = '1';
     document.body.classList.remove('nav-active');
+    const navToggleBtn = document.getElementById('navToggleBtn');
+    navToggleBtn.textContent = 'Start';
+    navToggleBtn.classList.remove('nav-toggle-stop');
+    navToggleBtn.classList.add('nav-toggle-start');
     exitFullscreen();
     setTimeout(() => map.invalidateSize(), 100);
   }
@@ -975,14 +987,17 @@
     // marker + follow above run for every fix; guidance below only while navigating
     if(!navStartTime) return;
 
-    // record the actually-ridden track (independent of route matching) for GPX export
+    // distance traveled (for the avg-speed stat) is tracked regardless; the actual
+    // GPX point track is only kept if recording was opted into before starting
     const moved = lastRecordedPoint ? haversine(lastRecordedPoint, p) : Infinity;
     if(moved >= 3){
       recordedDistance += lastRecordedPoint ? moved : 0;
-      recordedTrack.push({ lat:p.lat, lon:p.lon, ele: pos.coords.altitude, time: new Date().toISOString() });
       lastRecordedPoint = p;
-      document.getElementById('recordingInfo').textContent = 'Aufzeichnung: ' + fmtDist(recordedDistance);
-      document.getElementById('exportBtn').disabled = recordedTrack.length < 2;
+      if(recordingEnabled){
+        recordedTrack.push({ lat:p.lat, lon:p.lon, ele: pos.coords.altitude, time: new Date().toISOString() });
+        document.getElementById('recordingInfo').textContent = 'Aufzeichnung: ' + fmtDist(recordedDistance);
+        document.getElementById('exportBtn').disabled = recordedTrack.length < 2;
+      }
     }
     updateTripStats();
 
