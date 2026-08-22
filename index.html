@@ -68,6 +68,11 @@
     max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
   #fileInput{display:none;}
+  #routeProfile{
+    background:var(--panel-raised); color:var(--text);
+    border:1px solid var(--line); border-radius:8px;
+    padding:8px 6px; font-size:12px; max-width:92px;
+  }
 
   /* --- Map --- */
   #mapWrap{flex:1; position:relative; min-height:0;}
@@ -95,6 +100,18 @@
   #downloadText{margin-bottom:8px; font-weight:700;}
   #downloadBarTrack{height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin-bottom:10px;}
   #downloadBarFill{height:100%; width:0%; background:var(--sign-yellow);}
+
+  /* --- Next-turn banner (shown as a map overlay while navigating) --- */
+  #turnBanner{
+    position:absolute; top:10px; left:10px; right:10px;
+    background:rgba(28,32,36,0.96); border:1px solid var(--sign-yellow);
+    color:var(--text); padding:10px 14px; border-radius:10px;
+    display:none; align-items:center; gap:14px; z-index:910;
+  }
+  #turnBanner.show{display:flex;}
+  #turnArrowIcon{width:34px; height:34px; flex-shrink:0; color:var(--sign-yellow); transition:transform 0.3s ease;}
+  #turnBannerDist{font-size:20px; font-weight:800; line-height:1.1;}
+  #turnBannerLabel{font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.04em;}
 
   /* --- Floating controls on map --- */
   #mapControls{
@@ -142,6 +159,8 @@
     padding:16px; text-align:center; color:var(--text-dim); font-size:13px;
   }
   #placeholder.hide{display:none;}
+  #routeSummary{display:none;}
+  #routeSummary.show{display:block;}
   .stat-row{display:flex; align-items:flex-end; gap:22px; margin-bottom:10px;}
   .stat-row2{display:flex; gap:26px; margin-bottom:10px;}
   .stat-main .stat-value{font-size:40px; font-weight:800; letter-spacing:-0.01em; line-height:1;}
@@ -162,11 +181,6 @@
     font-size:12.5px; color:var(--text-dim); margin-bottom:10px; min-height:16px;
   }
   #nextWpt b{color:var(--text);}
-
-  #nextTurn{
-    font-size:12.5px; color:var(--text-dim); margin-bottom:6px; min-height:16px;
-  }
-  #nextTurn b{color:var(--text);}
 
   /* --- Elevation profile --- */
   #elevPanel{margin-bottom:10px; display:none;}
@@ -224,8 +238,7 @@
     width:18px; height:18px; accent-color:var(--sign-yellow);
   }
 
-  #startRow{display:flex; gap:10px; margin-top:10px;}
-  #startRow .btn{flex:1;}
+  .btn-block{display:block; width:100%; margin-top:10px;}
 </style>
 </head>
 <body>
@@ -234,6 +247,12 @@
   <div id="topbar">
     <h1>Rad-Navi</h1>
     <div class="spacer"></div>
+    <select id="routeProfile" title="Routing-Profil für berechnete Routen">
+      <option value="trekking" selected>Standard</option>
+      <option value="fastbike">Schnell</option>
+      <option value="safety">Ruhig</option>
+      <option value="shortest">Kürzeste</option>
+    </select>
     <label id="fileLabel" for="fileInput">GPX laden…</label>
     <input type="file" id="fileInput" accept=".gpx">
   </div>
@@ -242,6 +261,16 @@
     <div id="map"></div>
 
     <div id="banner"></div>
+
+    <div id="turnBanner">
+      <svg id="turnArrowIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M12 4 L12 20 M12 4 L6 10 M12 4 L18 10" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <div id="turnBannerDist">–</div>
+        <div id="turnBannerLabel">–</div>
+      </div>
+    </div>
 
     <div id="downloadPanel">
       <div id="downloadText">Kacheln werden geladen… 0 / 0</div>
@@ -259,6 +288,25 @@
 
   <div id="dashboard">
     <div id="placeholder">Lade eine GPX-Datei, um die Route auf der Karte zu sehen.</div>
+
+    <div id="routeSummary">
+      <div class="stat-row">
+        <div class="stat-main">
+          <div class="stat-value" id="summaryDistance">–</div>
+          <div class="stat-label">Streckenlänge</div>
+        </div>
+      </div>
+
+      <div id="elevPanel">
+        <div id="elevHeader"><span>Höhenprofil</span><span id="elevStats"></span></div>
+        <svg id="elevSvg" viewBox="0 0 300 54" preserveAspectRatio="none">
+          <path id="elevPath" d=""/>
+          <circle id="elevMarker" r="4" cx="0" cy="0"/>
+        </svg>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="startBtn">Navigation starten</button>
+    </div>
 
     <div id="navContent" style="display:none;">
       <div class="stat-row">
@@ -291,7 +339,6 @@
 
       <div id="offRouteBanner">⚠ Du bist <span id="offRouteDist">–</span> von der Route entfernt</div>
 
-      <div id="nextTurn">&nbsp;</div>
       <div id="nextWpt">&nbsp;</div>
 
       <div id="trail">
@@ -300,34 +347,24 @@
         <div id="trailRider"></div>
       </div>
 
-      <div id="elevPanel">
-        <div id="elevHeader"><span>Höhenprofil</span><span id="elevStats"></span></div>
-        <svg id="elevSvg" viewBox="0 0 300 54" preserveAspectRatio="none">
-          <path id="elevPath" d=""/>
-          <circle id="elevMarker" r="4" cx="0" cy="0"/>
-        </svg>
-      </div>
-
       <div id="recordingRow">
         <span id="recordingInfo">Aufzeichnung: 0 m</span>
         <button class="btn btn-ghost" id="exportBtn" disabled>GPX exportieren</button>
       </div>
+
+      <button class="btn btn-danger btn-block" id="stopBtn">Stopp</button>
     </div>
 
     <label id="settingsRow">
       <input type="checkbox" id="voiceToggle" checked>
       <span>🔊 Sprachansagen (Route verlassen, Wegpunkte, Ziel)</span>
     </label>
-
-    <div id="startRow" style="display:none;">
-      <button class="btn btn-primary" id="startBtn">Navigation starten</button>
-      <button class="btn btn-danger" id="stopBtn" style="display:none;">Stopp</button>
-    </div>
   </div>
 
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
 <script>
 (function(){
 
@@ -350,7 +387,12 @@
   setInterval(updateTheme, 5 * 60 * 1000);
 
   // ---------- Map setup ----------
-  const map = L.map('map', { zoomControl:false }).setView([51.1657, 10.4515], 6);
+  // rotate/rotateControl/touchRotate/bearing are provided by the leaflet-rotate plugin
+  // (loaded above); if that script fails to load, these options are simply ignored by
+  // vanilla Leaflet and the map stays north-up — heading rotation is feature-detected below.
+  const map = L.map('map', {
+    zoomControl:false, rotate:true, rotateControl:false, touchRotate:false, bearing:0
+  }).setView([51.1657, 10.4515], 6);
   L.control.zoom({ position:'topright' }).addTo(map);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom:19,
@@ -378,6 +420,13 @@
   let programmaticZoom = false; // true while WE change the view, so user zoom detection ignores it
   let pickingDestination = false;
   let destMarker = null;
+  let lastHeading = 0;
+
+  // Heading-up map rotation (only while actively navigating + auto-follow is on);
+  // no-ops if the leaflet-rotate plugin failed to load.
+  function setMapBearing(deg){
+    if(typeof map.setBearing === 'function') map.setBearing(deg);
+  }
 
   // voice-announcement state (reset per route)
   let voiceEnabled = true;
@@ -535,7 +584,7 @@
       const label = abs >= 100 ? (right ? 'scharf rechts' : 'scharf links')
                   : abs >= 55  ? (right ? 'rechts' : 'links')
                   :              (right ? 'leicht rechts' : 'leicht links');
-      return { cumDist: c.cumDist, label };
+      return { cumDist: c.cumDist, angle: c.angle, label };
     });
   }
 
@@ -668,6 +717,8 @@
     document.getElementById('statAvgSpeed').textContent = '–';
     document.getElementById('recordingRow').classList.remove('show');
     document.getElementById('exportBtn').disabled = true;
+    document.getElementById('turnBanner').classList.remove('show');
+    setMapBearing(0);
 
     // draw on map
     if(routeLayer) map.removeLayer(routeLayer);
@@ -691,9 +742,11 @@
       wptMarkers.push(m);
     });
 
+    document.getElementById('summaryDistance').textContent = fmtDist(totalDist);
+
     document.getElementById('placeholder').classList.add('hide');
     document.getElementById('navContent').style.display = 'none';
-    document.getElementById('startRow').style.display = 'flex';
+    document.getElementById('routeSummary').classList.add('show');
     document.getElementById('settingsRow').style.display = 'flex';
     document.getElementById('offlineBtn').style.display = 'flex';
     document.getElementById('dashboard').classList.add('show');
@@ -743,6 +796,7 @@
     if(routeLayer){
       followMode = false;
       document.getElementById('followBtn').classList.remove('active');
+      setMapBearing(0);
       programmaticZoom = true;
       map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
       programmaticZoom = false;
@@ -751,6 +805,7 @@
   map.on('dragstart', function(){
     followMode = false;
     document.getElementById('followBtn').classList.remove('active');
+    setMapBearing(0);
   });
   // Any manual zoom (pinch, scroll wheel, +/- buttons, double-click) stops auto-follow,
   // so the speed-adaptive zoom doesn't snap back right after the user zoomed out.
@@ -759,6 +814,7 @@
     if(programmaticZoom) return;
     followMode = false;
     document.getElementById('followBtn').classList.remove('active');
+    setMapBearing(0);
   });
 
   // ---------- Route to a chosen destination (via BRouter) ----------
@@ -767,6 +823,10 @@
     this.classList.toggle('active', pickingDestination);
     map.getContainer().style.cursor = pickingDestination ? 'crosshair' : '';
     if(pickingDestination){
+      // pause auto-follow/rotation so the map holds still (north-up) while aiming the tap
+      followMode = false;
+      document.getElementById('followBtn').classList.remove('active');
+      setMapBearing(0);
       showBanner('Tippe auf die Karte, um dein Ziel zu wählen.');
     }else{
       hideBanner();
@@ -789,9 +849,10 @@
 
     showBanner('Route wird berechnet…');
     try{
+      const profile = document.getElementById('routeProfile').value;
       const url = 'https://brouter.de/brouter?lonlats=' +
         lastFix.lon + ',' + lastFix.lat + '|' + latlng.lng + ',' + latlng.lat +
-        '&profile=trekking&alternativeidx=0&format=gpx';
+        '&profile=' + profile + '&alternativeidx=0&format=gpx';
       const res = await fetch(url);
       if(!res.ok) throw new Error('Routing-Server antwortete mit Fehler ' + res.status);
       const gpxText = await res.text();
@@ -834,9 +895,8 @@
       return;
     }
 
+    document.getElementById('routeSummary').classList.remove('show');
     document.getElementById('navContent').style.display = 'block';
-    document.getElementById('startBtn').style.display = 'none';
-    document.getElementById('stopBtn').style.display = 'block';
     document.getElementById('fileLabel').style.pointerEvents = 'none';
     document.getElementById('fileLabel').style.opacity = '0.5';
 
@@ -858,8 +918,10 @@
     if('speechSynthesis' in window) window.speechSynthesis.cancel();
     if(tripTimerInterval) clearInterval(tripTimerInterval);
     tripTimerInterval = null;
-    document.getElementById('startBtn').style.display = 'block';
-    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('navContent').style.display = 'none';
+    document.getElementById('routeSummary').classList.add('show');
+    document.getElementById('turnBanner').classList.remove('show');
+    setMapBearing(0);
     document.getElementById('fileLabel').style.pointerEvents = 'auto';
     document.getElementById('fileLabel').style.opacity = '1';
   }
@@ -885,11 +947,18 @@
   function onPosition(pos){
     hideBanner();
     const p = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+    const prevFix = lastFix; // kept for the heading fallback below
     lastFix = p;
     const kmh = pos.coords.speed != null ? (pos.coords.speed * 3.6) : null;
 
     // marker
     const heading = pos.coords.heading;
+    let headingDeg = (heading !== null && !isNaN(heading)) ? heading : null;
+    if(headingDeg == null && prevFix && haversine(prevFix, p) > 3){
+      headingDeg = bearing(prevFix, p); // GPS course is often unavailable; derive it from movement
+    }
+    if(headingDeg != null) lastHeading = headingDeg;
+
     const html = (heading !== null && !isNaN(heading))
       ? `<div class="user-arrow" style="transform:rotate(${heading}deg)"></div>`
       : `<div class="user-dot"></div>`;
@@ -914,6 +983,7 @@
       }else{
         map.panTo([p.lat, p.lon]);
       }
+      if(navStartTime) setMapBearing(lastHeading); // heading-up while actively navigating
     }
 
     document.getElementById('statSpeed').textContent = kmh != null ? kmh.toFixed(1) : '–';
@@ -965,12 +1035,15 @@
     document.getElementById('compassArrow').style.transform = `rotate(${brg}deg)`;
     document.getElementById('compassLabel').textContent = cardinal(brg) + ' ' + Math.round(brg) + '°';
 
-    // next turn + proximity voice ("in 100 Metern links abbiegen")
+    // next turn: big arrow banner on the map + proximity voice ("in 100 Metern links abbiegen")
     const upcomingTurn = turnPoints.find(t => t.cumDist > nearest.traveled);
-    const turnEl = document.getElementById('nextTurn');
+    const turnBanner = document.getElementById('turnBanner');
     if(upcomingTurn){
       const distTo = upcomingTurn.cumDist - nearest.traveled;
-      turnEl.innerHTML = 'Nächste Abzweigung: <b>' + upcomingTurn.label + '</b> in ' + fmtDist(distTo);
+      document.getElementById('turnArrowIcon').style.transform = `rotate(${upcomingTurn.angle}deg)`;
+      document.getElementById('turnBannerDist').textContent = fmtDist(distTo);
+      document.getElementById('turnBannerLabel').textContent = upcomingTurn.label;
+      turnBanner.classList.add('show');
       if(distTo <= 150 && !announcedTurnFar.has(upcomingTurn.cumDist)){
         announcedTurnFar.add(upcomingTurn.cumDist);
         speak('In ' + Math.round(distTo / 10) * 10 + ' Metern ' + upcomingTurn.label + ' abbiegen.');
@@ -980,7 +1053,7 @@
         speak('Jetzt ' + upcomingTurn.label + '.');
       }
     }else{
-      turnEl.innerHTML = '&nbsp;';
+      turnBanner.classList.remove('show');
     }
 
     // elevation profile marker

@@ -1,12 +1,13 @@
 // Service Worker für Rad-Navi: cached App-Shell + Kartenkacheln für Offline-Nutzung.
 // Bei größeren Änderungen an der App: CACHE_NAME hochzählen, damit alte Caches ersetzt werden.
-const CACHE_NAME = 'rad-navi-v3';
+const CACHE_NAME = 'rad-navi-v4';
 
 const SHELL_URLS = [
   './',
   './index.html',
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css',
-  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js'
+  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js',
+  'https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js'
 ];
 
 self.addEventListener('install', event => {
