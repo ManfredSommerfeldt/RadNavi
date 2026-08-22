@@ -1156,19 +1156,6 @@
       return;
     }
 
-    if(routes.length){
-      resultsEl.appendChild(sectionLabel('Bekannte Routen'));
-      routes.forEach(r => {
-        const item = document.createElement('div');
-        item.className = 'route-search-item';
-        const via = Array.isArray(r.itinerary) && r.itinerary.length ? r.itinerary.join(' – ') : '';
-        item.innerHTML = '<span>' + r.name + (r.ref ? ' (' + r.ref + ')' : '') + '</span>' +
-          (via ? '<span>' + via + '</span>' : '');
-        item.addEventListener('click', () => loadNamedRoute(r.id, r.name));
-        resultsEl.appendChild(item);
-      });
-    }
-
     if(places.length){
       resultsEl.appendChild(sectionLabel('Orte – Route dorthin berechnen'));
       places.forEach(p => {
@@ -1190,6 +1177,19 @@
           document.getElementById('routeSearchPanel').classList.remove('show');
           routeToPoint(parseFloat(p.lat), parseFloat(p.lon), primary);
         });
+        resultsEl.appendChild(item);
+      });
+    }
+
+    if(routes.length){
+      resultsEl.appendChild(sectionLabel('Bekannte Routen'));
+      routes.forEach(r => {
+        const item = document.createElement('div');
+        item.className = 'route-search-item';
+        const via = Array.isArray(r.itinerary) && r.itinerary.length ? r.itinerary.join(' – ') : '';
+        item.innerHTML = '<span>' + r.name + (r.ref ? ' (' + r.ref + ')' : '') + '</span>' +
+          (via ? '<span>' + via + '</span>' : '');
+        item.addEventListener('click', () => loadNamedRoute(r.id, r.name));
         resultsEl.appendChild(item);
       });
     }
