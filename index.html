@@ -122,8 +122,24 @@
     padding:10px 8px; border-top:1px solid #2c3236; color:#eef0ee;
     font-size:13.5px; cursor:pointer; display:flex; justify-content:space-between; gap:10px;
   }
-  .route-search-item span{color:#a9b0aa; white-space:nowrap;}
+  .route-search-item span:last-child{color:#a9b0aa; white-space:nowrap;}
   .route-search-status{padding:10px 8px; color:#a9b0aa; font-size:13px;}
+  .route-search-section{
+    padding:10px 8px 4px; color:#a9b0aa; font-size:11px;
+    text-transform:uppercase; letter-spacing:0.05em;
+  }
+
+  /* --- Route-alternative picker (shown after routing to a tapped/searched point) --- */
+  #routeAltPanel{
+    position:absolute; top:10px; left:10px; right:10px; z-index:965;
+    background:rgba(28,32,36,0.98); border:1px solid #f2c14e; border-radius:10px;
+    display:none;
+  }
+  #routeAltPanel.show{display:block;}
+  #routeAltHeader{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:10px 12px; color:#eef0ee; font-weight:700; font-size:13.5px;
+  }
 
   /* --- Floating controls on map --- */
   #mapControls{
@@ -188,7 +204,7 @@
   #routeHeader.show{display:block;}
   #routeSummary{display:none;}
   #routeSummary.show{display:block;}
-  .stat-row{display:flex; align-items:flex-end; gap:22px; margin-bottom:10px;}
+  .stat-row{display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px 22px; margin-bottom:10px;}
   .stat-row2{display:flex; gap:26px; margin-bottom:10px;}
   .stat-main .stat-value{font-size:40px; font-weight:800; letter-spacing:-0.01em; line-height:1;}
   .stat-main .stat-label{font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.06em; margin-top:2px;}
@@ -280,10 +296,18 @@
 
     <div id="routeSearchPanel">
       <div id="routeSearchHeader">
-        <input type="text" id="routeSearchInput" placeholder="z. B. Ruhrtalradweg, RS1…">
+        <input type="text" id="routeSearchInput" placeholder="Ort oder Route, z. B. Essen, Ruhrtalradweg…">
         <button class="btn btn-ghost" id="routeSearchCloseBtn">✕</button>
       </div>
       <div id="routeSearchResults"></div>
+    </div>
+
+    <div id="routeAltPanel">
+      <div id="routeAltHeader">
+        <span>Route wählen</span>
+        <button class="btn btn-ghost" id="routeAltCloseBtn">✕</button>
+      </div>
+      <div id="routeAltResults"></div>
     </div>
 
     <div id="mapControls">
@@ -307,6 +331,10 @@
         <div class="stat-sub" id="speedStat" style="display:none;">
           <div class="stat-value" id="statSpeed">–</div>
           <div class="stat-label">km/h</div>
+        </div>
+        <div class="stat-sub" id="etaStat" style="display:none;">
+          <div class="stat-value" id="statEta">–</div>
+          <div class="stat-label">Ankunft</div>
         </div>
         <div class="nav-toggle-start" id="navToggleBtn" title="Navigation starten/stoppen">Start</div>
       </div>
@@ -473,6 +501,9 @@
   // voice-announcement state (reset per route)
   let wasOffRoute = false;
   let lastOffRouteAnnounce = 0;
+  let offRouteSince = null;
+  let rerouteInProgress = false;
+  let lastRerouteAttempt = 0;
   let announcedNear = new Set();
   let announcedClose = new Set();
   let announcedArrival = false;
@@ -723,7 +754,11 @@
     return { points, waypoints };
   }
 
-  function loadRoute(points, waypoints){
+  // Sets the actual route geometry (track/turns/elevation/map polyline) without touching
+  // the nav session (trip timer, recording, which dashboard panel is showing). Used both
+  // by loadRoute() below (a fresh route) and autoReroute() (replacing the route mid-ride
+  // without interrupting the active session).
+  function setTrackGeometry(points, waypoints){
     trackPoints = points;
     cumDist = [0];
     for(let i = 1; i < points.length; i++){
@@ -740,17 +775,39 @@
       return { name: w.name, lat: w.lat, lon: w.lon, cumDist: cumDist[bestIdx] };
     }).sort((a,b) => a.cumDist - b.cumDist);
 
+    turnPoints = computeTurns();
+    buildElevationProfile();
+
+    if(routeLayer) map.removeLayer(routeLayer);
+    wptMarkers.forEach(m => map.removeLayer(m));
+    wptMarkers = [];
+
+    const latlngs = trackPoints.map(p => [p.lat, p.lon]);
+    routeLayer = L.polyline(latlngs, { color:'#4f9d69', weight:5, opacity:0.85 }).addTo(map);
+
+    waypoints.forEach(w => {
+      const icon = L.divIcon({
+        className:'', html:'<div class="wpt-pin"><span>●</span></div>',
+        iconSize:[22,22], iconAnchor:[11,20]
+      });
+      const m = L.marker([w.lat, w.lon], { icon }).bindPopup(w.name).addTo(map);
+      wptMarkers.push(m);
+    });
+  }
+
+  function loadRoute(points, waypoints){
+    setTrackGeometry(points, waypoints);
+    if(destMarker){ map.removeLayer(destMarker); destMarker = null; }
+
     // reset voice-announcement state for the new route
     wasOffRoute = false;
     lastOffRouteAnnounce = 0;
+    offRouteSince = null;
     announcedNear = new Set();
     announcedClose = new Set();
     announcedArrival = false;
     announcedTurnFar = new Set();
     announcedTurnNear = new Set();
-
-    turnPoints = computeTurns();
-    buildElevationProfile();
 
     // reset trip timer / recording state for the new route
     navStartTime = null;
@@ -766,31 +823,15 @@
     document.getElementById('turnBanner').classList.remove('show');
     setMapBearing(0);
 
-    // draw on map
-    if(routeLayer) map.removeLayer(routeLayer);
-    wptMarkers.forEach(m => map.removeLayer(m));
-    wptMarkers = [];
-    if(destMarker){ map.removeLayer(destMarker); destMarker = null; }
-
-    const latlngs = trackPoints.map(p => [p.lat, p.lon]);
-    routeLayer = L.polyline(latlngs, { color:'#4f9d69', weight:5, opacity:0.85 }).addTo(map);
     map.invalidateSize();
     programmaticZoom = true;
     map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
     programmaticZoom = false;
 
-    waypoints.forEach(w => {
-      const icon = L.divIcon({
-        className:'', html:'<div class="wpt-pin"><span>●</span></div>',
-        iconSize:[22,22], iconAnchor:[11,20]
-      });
-      const m = L.marker([w.lat, w.lon], { icon }).bindPopup(w.name).addTo(map);
-      wptMarkers.push(m);
-    });
-
     document.getElementById('mainDistance').textContent = fmtDist(totalDist);
     document.getElementById('mainDistanceLabel').textContent = 'Streckenlänge';
     document.getElementById('speedStat').style.display = 'none';
+    document.getElementById('etaStat').style.display = 'none';
 
     document.getElementById('placeholder').classList.add('hide');
     document.getElementById('navContent').style.display = 'none';
@@ -798,6 +839,37 @@
     document.getElementById('routeSummary').classList.add('show');
     document.getElementById('offlineBtn').style.display = 'flex';
     document.getElementById('dashboard').classList.add('show');
+  }
+
+  // Replaces the route geometry mid-ride (after drifting off-route for a while) without
+  // resetting the trip timer, recording, or leaving the active-nav dashboard view.
+  async function autoReroute(){
+    if(rerouteInProgress || !lastFix || trackPoints.length < 2) return;
+    rerouteInProgress = true;
+    lastRerouteAttempt = Date.now();
+    try{
+      const dest = trackPoints[trackPoints.length - 1];
+      const profile = document.getElementById('routeProfile').value;
+      const url = 'https://brouter.de/brouter?lonlats=' +
+        lastFix.lon + ',' + lastFix.lat + '|' + dest.lon + ',' + dest.lat +
+        '&profile=' + profile + '&alternativeidx=0&format=gpx';
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('status ' + res.status);
+      const gpxText = await res.text();
+      const { points } = parseGPX(gpxText);
+      setTrackGeometry(points, []);
+      wasOffRoute = false;
+      offRouteSince = null;
+      announcedTurnFar = new Set();
+      announcedTurnNear = new Set();
+      document.getElementById('offRouteBanner').classList.remove('show');
+      speak('Route neu berechnet.');
+    }catch(err){
+      // Stay quiet on failure — this runs unattended while riding; it'll retry
+      // automatically once the cooldown passes and we're still off-route.
+    }finally{
+      rerouteInProgress = false;
+    }
   }
 
   // ---------- File input ----------
@@ -885,10 +957,14 @@
     pickingDestination = false;
     document.getElementById('routeBtn').classList.remove('active');
     map.getContainer().style.cursor = '';
-    requestBRouterRoute(e.latlng);
+    routeToPoint(e.latlng.lat, e.latlng.lng, null);
   });
 
-  async function requestBRouterRoute(latlng){
+  // Computes a route from the current position to (lat, lon) via BRouter, offering a
+  // choice when it finds genuinely different alternatives (like Google Maps' route
+  // picker) — but skips the picker when the "alternatives" are near-identical, which
+  // BRouter returns often enough that always showing a choice would just be noise.
+  async function routeToPoint(lat, lon, label){
     if(!lastFix){
       showBanner('<strong>Kein Standort:</strong> Warte, bis dein GPS-Standort ermittelt wurde, bevor du ein Ziel wählst.');
       return;
@@ -897,31 +973,111 @@
     showBanner('Route wird berechnet…');
     try{
       const profile = document.getElementById('routeProfile').value;
-      const url = 'https://brouter.de/brouter?lonlats=' +
-        lastFix.lon + ',' + lastFix.lat + '|' + latlng.lng + ',' + latlng.lat +
-        '&profile=' + profile + '&alternativeidx=0&format=gpx';
-      const res = await fetch(url);
-      if(!res.ok) throw new Error('Routing-Server antwortete mit Fehler ' + res.status);
-      const gpxText = await res.text();
-      const { points, waypoints } = parseGPX(gpxText);
-      loadRoute(points, waypoints); // also clears any previous destination marker
-      document.getElementById('fileLabel').textContent = 'Berechnete Route';
+      const settled = await Promise.allSettled([0, 1, 2].map(async idx => {
+        const url = 'https://brouter.de/brouter?lonlats=' +
+          lastFix.lon + ',' + lastFix.lat + '|' + lon + ',' + lat +
+          '&profile=' + profile + '&alternativeidx=' + idx + '&format=gpx';
+        const res = await fetch(url);
+        if(!res.ok) throw new Error('status ' + res.status);
+        const gpxText = await res.text();
+        const { points, waypoints } = parseGPX(gpxText);
+        let dist = 0;
+        for(let i = 1; i < points.length; i++) dist += haversine(points[i-1], points[i]);
+        return { points, waypoints, dist };
+      }));
 
-      const icon = L.divIcon({
-        className:'', html:'<div class="wpt-pin" style="border-color:var(--warn-red); color:var(--warn-red);"><span>⚑</span></div>',
-        iconSize:[22,22], iconAnchor:[11,20]
+      const options = settled.filter(r => r.status === 'fulfilled').map(r => r.value);
+      if(options.length === 0) throw new Error('Keine Route gefunden.');
+
+      const unique = [];
+      options.forEach(o => {
+        if(!unique.some(u => Math.abs(u.dist - o.dist) < Math.max(200, u.dist * 0.02))) unique.push(o);
       });
-      destMarker = L.marker([latlng.lat, latlng.lng], { icon }).addTo(map);
+
       hideBanner();
+      if(unique.length <= 1){
+        commitRoute(unique[0], label, lat, lon);
+      }else{
+        showRouteAlternatives(unique, label, lat, lon);
+      }
     }catch(err){
       showBanner('<strong>Route konnte nicht berechnet werden:</strong> ' + err.message);
     }
   }
 
-  // ---------- Search & load a known named route (Waymarked Trails cycling API) ----------
+  function commitRoute(option, label, lat, lon){
+    loadRoute(option.points, option.waypoints); // also clears any previous destination marker
+    document.getElementById('fileLabel').textContent = label || 'Berechnete Route';
+
+    const icon = L.divIcon({
+      className:'', html:'<div class="wpt-pin" style="border-color:var(--warn-red); color:var(--warn-red);"><span>⚑</span></div>',
+      iconSize:[22,22], iconAnchor:[11,20]
+    });
+    destMarker = L.marker([lat, lon], { icon }).addTo(map);
+    saveRecentEntry({ type:'point', lat, lon, name: label || ('Ziel ' + lat.toFixed(3) + ', ' + lon.toFixed(3)) });
+  }
+
+  function showRouteAlternatives(options, label, lat, lon){
+    const el = document.getElementById('routeAltResults');
+    el.innerHTML = '';
+    options.forEach((o, i) => {
+      const item = document.createElement('div');
+      item.className = 'route-search-item';
+      item.innerHTML = '<span>' + (i === 0 ? 'Empfohlen' : 'Alternative ' + i) + '</span><span>' + fmtDist(o.dist) + '</span>';
+      item.addEventListener('click', () => {
+        document.getElementById('routeAltPanel').classList.remove('show');
+        commitRoute(o, label, lat, lon);
+      });
+      el.appendChild(item);
+    });
+    document.getElementById('routeAltPanel').classList.add('show');
+  }
+  document.getElementById('routeAltCloseBtn').addEventListener('click', function(){
+    document.getElementById('routeAltPanel').classList.remove('show');
+  });
+
+  // ---------- Recently used destinations & routes (localStorage) ----------
+  const RECENTS_KEY = 'radnavi_recents';
+  function loadRecents(){
+    try{ return JSON.parse(localStorage.getItem(RECENTS_KEY)) || []; }catch(e){ return []; }
+  }
+  function saveRecentEntry(entry){
+    let recents = loadRecents().filter(r =>
+      !(r.type === entry.type && r.id === entry.id && r.lat === entry.lat && r.lon === entry.lon)
+    );
+    recents.unshift(entry);
+    try{ localStorage.setItem(RECENTS_KEY, JSON.stringify(recents.slice(0, 8))); }catch(e){}
+  }
+  function showRecents(){
+    const recents = loadRecents();
+    const resultsEl = document.getElementById('routeSearchResults');
+    resultsEl.innerHTML = '';
+    if(recents.length === 0) return;
+    resultsEl.appendChild(sectionLabel('Zuletzt verwendet'));
+    recents.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'route-search-item';
+      item.innerHTML = '<span>' + r.name + '</span>';
+      item.addEventListener('click', function(){
+        document.getElementById('routeSearchPanel').classList.remove('show');
+        if(r.type === 'named') loadNamedRoute(r.id, r.name);
+        else routeToPoint(r.lat, r.lon, r.name);
+      });
+      resultsEl.appendChild(item);
+    });
+  }
+  function sectionLabel(text){
+    const el = document.createElement('div');
+    el.className = 'route-search-section';
+    el.textContent = text;
+    return el;
+  }
+
+  // ---------- Search: known named routes (Waymarked Trails) + addresses/places (Nominatim) ----------
   document.getElementById('namedRouteBtn').addEventListener('click', function(){
     document.getElementById('routeSearchPanel').classList.add('show');
     document.getElementById('routeSearchInput').focus();
+    if(!document.getElementById('routeSearchInput').value.trim()) showRecents();
   });
   document.getElementById('routeSearchCloseBtn').addEventListener('click', function(){
     document.getElementById('routeSearchPanel').classList.remove('show');
@@ -931,25 +1087,34 @@
   document.getElementById('routeSearchInput').addEventListener('input', function(){
     clearTimeout(routeSearchTimer);
     const query = this.value.trim();
-    const resultsEl = document.getElementById('routeSearchResults');
-    if(query.length < 3){ resultsEl.innerHTML = ''; return; }
-    routeSearchTimer = setTimeout(() => searchNamedRoutes(query), 400);
+    if(query.length === 0){ showRecents(); return; }
+    if(query.length < 3){ document.getElementById('routeSearchResults').innerHTML = ''; return; }
+    routeSearchTimer = setTimeout(() => searchRoutesAndPlaces(query), 400);
   });
 
-  async function searchNamedRoutes(query){
+  async function searchRoutesAndPlaces(query){
     const resultsEl = document.getElementById('routeSearchResults');
     resultsEl.innerHTML = '<div class="route-search-status">Suche…</div>';
-    try{
-      const url = 'https://cycling.waymarkedtrails.org/api/v1/list/search?limit=8&query=' + encodeURIComponent(query);
-      const res = await fetch(url);
-      if(!res.ok) throw new Error('Fehler ' + res.status);
-      const data = await res.json();
-      if(!data.results || data.results.length === 0){
-        resultsEl.innerHTML = '<div class="route-search-status">Keine Route gefunden.</div>';
-        return;
-      }
-      resultsEl.innerHTML = '';
-      data.results.forEach(r => {
+
+    const routesPromise = fetch('https://cycling.waymarkedtrails.org/api/v1/list/search?limit=6&query=' + encodeURIComponent(query))
+      .then(res => res.ok ? res.json() : { results: [] })
+      .catch(() => ({ results: [] }));
+    const placesPromise = fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&accept-language=de&q=' + encodeURIComponent(query))
+      .then(res => res.ok ? res.json() : [])
+      .catch(() => []);
+
+    const [routeData, places] = await Promise.all([routesPromise, placesPromise]);
+    const routes = (routeData && routeData.results) || [];
+
+    resultsEl.innerHTML = '';
+    if(routes.length === 0 && places.length === 0){
+      resultsEl.innerHTML = '<div class="route-search-status">Nichts gefunden.</div>';
+      return;
+    }
+
+    if(routes.length){
+      resultsEl.appendChild(sectionLabel('Bekannte Routen'));
+      routes.forEach(r => {
         const item = document.createElement('div');
         item.className = 'route-search-item';
         const via = Array.isArray(r.itinerary) && r.itinerary.length ? r.itinerary.join(' – ') : '';
@@ -958,8 +1123,21 @@
         item.addEventListener('click', () => loadNamedRoute(r.id, r.name));
         resultsEl.appendChild(item);
       });
-    }catch(err){
-      resultsEl.innerHTML = '<div class="route-search-status">Suche fehlgeschlagen: ' + err.message + '</div>';
+    }
+
+    if(places.length){
+      resultsEl.appendChild(sectionLabel('Orte – Route dorthin berechnen'));
+      places.forEach(p => {
+        const item = document.createElement('div');
+        item.className = 'route-search-item';
+        const shortName = p.display_name.split(',').slice(0, 2).join(',');
+        item.innerHTML = '<span>' + shortName + '</span>';
+        item.addEventListener('click', function(){
+          document.getElementById('routeSearchPanel').classList.remove('show');
+          routeToPoint(parseFloat(p.lat), parseFloat(p.lon), shortName);
+        });
+        resultsEl.appendChild(item);
+      });
     }
   }
 
@@ -1019,6 +1197,7 @@
       });
       loadRoute(points, []);
       document.getElementById('fileLabel').textContent = name;
+      saveRecentEntry({ type:'named', id, name });
       hideBanner();
     }catch(err){
       showBanner('<strong>Route konnte nicht geladen werden:</strong> ' + err.message);
@@ -1054,6 +1233,7 @@
     document.getElementById('navContent').style.display = 'block';
     document.getElementById('mainDistanceLabel').textContent = 'Restdistanz';
     document.getElementById('speedStat').style.display = 'flex';
+    document.getElementById('etaStat').style.display = 'flex';
     document.getElementById('fileLabel').style.pointerEvents = 'none';
     document.getElementById('fileLabel').style.opacity = '0.5';
     document.body.classList.add('nav-active');
@@ -1098,6 +1278,7 @@
     document.getElementById('mainDistanceLabel').textContent = 'Streckenlänge';
     document.getElementById('mainDistance').textContent = fmtDist(totalDist);
     document.getElementById('speedStat').style.display = 'none';
+    document.getElementById('etaStat').style.display = 'none';
     document.getElementById('tripSummary').classList.add('show');
     document.getElementById('recordingRow').style.display = recordedTrack.length >= 2 ? 'flex' : 'none';
     document.getElementById('turnBanner').classList.remove('show');
@@ -1200,6 +1381,13 @@
     const remaining = totalDist - nearest.traveled;
     document.getElementById('mainDistance').textContent = fmtDist(remaining);
 
+    // arrival time, from distance remaining / average speed so far
+    const elapsedH = (Date.now() - navStartTime) / 3600000;
+    const avgKmh = elapsedH > 0 ? (recordedDistance / 1000) / elapsedH : 0;
+    document.getElementById('statEta').textContent = avgKmh > 1.5
+      ? new Date(Date.now() + (remaining / 1000) / avgKmh * 3600000).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' })
+      : '–';
+
     // off-route
     const offBanner = document.getElementById('offRouteBanner');
     const now = Date.now();
@@ -1210,14 +1398,21 @@
         speak('Achtung, du bist ' + Math.round(nearest.dist) + ' Meter von der Route entfernt.');
         lastOffRouteAnnounce = now;
         wasOffRoute = true;
+        offRouteSince = now;
       }else if(now - lastOffRouteAnnounce > 45000){
         speak('Du bist weiterhin abseits der Route.');
         lastOffRouteAnnounce = now;
+      }
+      // Like Google Maps: recalculate automatically once off-route for a while, with a
+      // cooldown so a failed/rejected attempt doesn't get retried every single GPS fix.
+      if(offRouteSince && now - offRouteSince > 15000 && now - lastRerouteAttempt > 60000){
+        autoReroute();
       }
     }else{
       offBanner.classList.remove('show');
       if(wasOffRoute) speak('Zurück auf der Route.');
       wasOffRoute = false;
+      offRouteSince = null;
     }
 
     // next turn: big arrow banner on the map + proximity voice ("in 100 Metern links abbiegen")
