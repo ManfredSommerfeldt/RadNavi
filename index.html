@@ -140,6 +140,10 @@
     display:flex; justify-content:space-between; align-items:center;
     padding:10px 12px; color:#eef0ee; font-weight:700; font-size:13.5px;
   }
+  .alt-color-dot{
+    display:inline-block; width:10px; height:10px; border-radius:50%;
+    margin-right:7px; vertical-align:middle;
+  }
 
   /* --- Floating controls on map --- */
   #mapControls{
@@ -448,6 +452,7 @@
   let programmaticZoom = false; // true while WE change the view, so user zoom detection ignores it
   let pickingDestination = false;
   let destMarker = null;
+  let altPreviewLayers = [];
   let lastHeading = 0;
 
   // Heading-up map rotation (only while actively navigating + auto-follow is on);
@@ -1017,22 +1022,52 @@
     saveRecentEntry({ type:'point', lat, lon, name: label || ('Ziel ' + lat.toFixed(3) + ', ' + lon.toFixed(3)) });
   }
 
+  function clearAltPreview(){
+    altPreviewLayers.forEach(l => map.removeLayer(l));
+    altPreviewLayers = [];
+  }
+
+  // Draws every alternative on the map at once (distinct colors + recommended solid vs.
+  // dashed alternatives) so the choice can actually be made by looking at the map, not
+  // just comparing distances in a list.
+  const ALT_COLORS = ['#4f9d69', '#f2c14e', '#5b9bd5'];
   function showRouteAlternatives(options, label, lat, lon){
+    clearAltPreview();
     const el = document.getElementById('routeAltResults');
     el.innerHTML = '';
+
+    const allLatLngs = [];
     options.forEach((o, i) => {
+      const color = ALT_COLORS[i % ALT_COLORS.length];
+      const latlngs = o.points.map(p => [p.lat, p.lon]);
+      allLatLngs.push(...latlngs);
+      altPreviewLayers.push(L.polyline(latlngs, {
+        color, weight: i === 0 ? 6 : 5, opacity: 0.9,
+        dashArray: i === 0 ? null : '9 7'
+      }).addTo(map));
+
       const item = document.createElement('div');
       item.className = 'route-search-item';
-      item.innerHTML = '<span>' + (i === 0 ? 'Empfohlen' : 'Alternative ' + i) + '</span><span>' + fmtDist(o.dist) + '</span>';
+      item.innerHTML = '<span><span class="alt-color-dot" style="background:' + color + '"></span>' +
+        (i === 0 ? 'Empfohlen' : 'Alternative ' + i) + '</span><span>' + fmtDist(o.dist) + '</span>';
       item.addEventListener('click', () => {
+        clearAltPreview();
         document.getElementById('routeAltPanel').classList.remove('show');
         commitRoute(o, label, lat, lon);
       });
       el.appendChild(item);
     });
+
+    if(allLatLngs.length){
+      programmaticZoom = true;
+      map.fitBounds(allLatLngs, { padding:[40,40] });
+      programmaticZoom = false;
+    }
+
     document.getElementById('routeAltPanel').classList.add('show');
   }
   document.getElementById('routeAltCloseBtn').addEventListener('click', function(){
+    clearAltPreview();
     document.getElementById('routeAltPanel').classList.remove('show');
   });
 
