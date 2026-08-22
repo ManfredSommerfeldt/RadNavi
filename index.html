@@ -119,13 +119,14 @@
   .fab.active{background:var(--sign-yellow); color:#221a06; border-color:var(--sign-yellow);}
   #offlineBtn{display:none;}
 
-  .fab-text{
-    width:56px; border-radius:22px; font-size:12.5px; font-weight:800;
-    text-transform:uppercase; letter-spacing:0.03em; border:none;
-  }
   .nav-toggle-start{background:var(--route-green); color:#0c2015;}
   .nav-toggle-stop{background:var(--warn-red); color:#2a0a05;}
-  #navToggleBtn{margin-left:auto;}
+  #navToggleBtn{
+    margin-left:auto; border:none; cursor:pointer;
+    padding:2px 18px; border-radius:10px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:40px; font-weight:800; letter-spacing:-0.01em; line-height:1;
+  }
 
   /* --- User marker --- */
   .user-dot{
@@ -278,7 +279,7 @@
           <div class="stat-value" id="statSpeed">–</div>
           <div class="stat-label">km/h</div>
         </div>
-        <div class="fab-text nav-toggle-start" id="navToggleBtn" title="Navigation starten/stoppen">Start</div>
+        <div class="nav-toggle-start" id="navToggleBtn" title="Navigation starten/stoppen">Start</div>
       </div>
     </div>
 
@@ -400,6 +401,23 @@
     const exit = document.exitFullscreen || document.webkitExitFullscreen;
     if(exit && (document.fullscreenElement || document.webkitFullscreenElement)) exit.call(document).catch(() => {});
   }
+
+  // Keep the screen from auto-locking while navigating — browsers throttle/pause GPS
+  // updates and voice timers heavily once the screen goes dark, so this is the only
+  // practical way for a web app (vs. a native background service) to keep guidance live.
+  // Doesn't cover a manual power-button press; the visibilitychange listener below
+  // re-acquires the lock once the screen comes back on so it recovers from that too.
+  let wakeLock = null;
+  async function requestWakeLock(){
+    if(!('wakeLock' in navigator)) return;
+    try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(e){}
+  }
+  function releaseWakeLock(){
+    if(wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible' && navStartTime) requestWakeLock();
+  });
 
   // voice-announcement state (reset per route)
   let wasOffRoute = false;
@@ -876,6 +894,7 @@
     navToggleBtn.classList.remove('nav-toggle-start');
     navToggleBtn.classList.add('nav-toggle-stop');
     enterFullscreen();
+    requestWakeLock();
     setTimeout(() => map.invalidateSize(), 100);
 
     // jump straight to the current position at a navigation zoom level, instead of
@@ -923,6 +942,7 @@
     navToggleBtn.classList.remove('nav-toggle-stop');
     navToggleBtn.classList.add('nav-toggle-start');
     exitFullscreen();
+    releaseWakeLock();
     setTimeout(() => map.invalidateSize(), 100);
   }
 
