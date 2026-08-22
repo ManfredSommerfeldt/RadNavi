@@ -105,6 +105,26 @@
   #turnBannerDist{font-size:20px; font-weight:800; line-height:1.1;}
   #turnBannerLabel{font-size:12px; color:#a9b0aa; text-transform:uppercase; letter-spacing:0.04em;}
 
+  /* --- Named-route search panel --- */
+  #routeSearchPanel{
+    position:absolute; top:10px; left:10px; right:10px; z-index:960;
+    background:rgba(28,32,36,0.98); border:1px solid #f2c14e; border-radius:10px;
+    display:none; max-height:70%; flex-direction:column; overflow:hidden;
+  }
+  #routeSearchPanel.show{display:flex;}
+  #routeSearchHeader{display:flex; gap:8px; padding:10px;}
+  #routeSearchInput{
+    flex:1; min-width:0; background:#23282c; color:#eef0ee;
+    border:1px solid #2c3236; border-radius:8px; padding:9px 12px; font-size:14px;
+  }
+  #routeSearchResults{overflow-y:auto; padding:0 10px 10px;}
+  .route-search-item{
+    padding:10px 8px; border-top:1px solid #2c3236; color:#eef0ee;
+    font-size:13.5px; cursor:pointer; display:flex; justify-content:space-between; gap:10px;
+  }
+  .route-search-item span{color:#a9b0aa; white-space:nowrap;}
+  .route-search-status{padding:10px 8px; color:#a9b0aa; font-size:13px;}
+
   /* --- Floating controls on map --- */
   #mapControls{
     position:absolute; right:10px; bottom:12px; z-index:900;
@@ -258,11 +278,20 @@
       <button class="btn btn-ghost" id="cancelDownloadBtn">Abbrechen</button>
     </div>
 
+    <div id="routeSearchPanel">
+      <div id="routeSearchHeader">
+        <input type="text" id="routeSearchInput" placeholder="z. B. Ruhrtalradweg, RS1…">
+        <button class="btn btn-ghost" id="routeSearchCloseBtn">✕</button>
+      </div>
+      <div id="routeSearchResults"></div>
+    </div>
+
     <div id="mapControls">
       <div class="fab active" id="followBtn" title="Karte folgt Position">◎</div>
       <div class="fab" id="fitBtn" title="Ganze Route zeigen">⤢</div>
       <div class="fab" id="routeBtn" title="Ziel auf der Karte wählen und Route berechnen">🎯</div>
-      <div class="fab" id="offlineBtn" title="Karte für Route offline speichern">⭳</div>
+      <div class="fab" id="namedRouteBtn" title="Bekannte Radroute suchen (z. B. Ruhrtalradweg, RS1)">🔍</div>
+      <div class="fab" id="offlineBtn" title="Karte für Route offline speichern">📥</div>
     </div>
   </div>
 
@@ -508,11 +537,22 @@
     return { ...best, traveled };
   }
 
+  // Binary search for the segment index i with cumDist[i] <= dist < cumDist[i+1].
+  // Long routes (e.g. a 230km named route with 12k+ points) made the old linear
+  // scan-from-zero noticeably slow, since computeTurns() calls this ~3x per 15m step.
+  function segmentAtDistance(dist){
+    let lo = 0, hi = cumDist.length - 1;
+    while(hi - lo > 1){
+      const mid = (lo + hi) >> 1;
+      if(cumDist[mid] <= dist) lo = mid; else hi = mid;
+    }
+    return lo;
+  }
+
   function pointAtDistance(dist){
     if(dist <= 0) return trackPoints[0];
     if(dist >= totalDist) return trackPoints[trackPoints.length-1];
-    let i = 0;
-    while(cumDist[i+1] < dist) i++;
+    const i = segmentAtDistance(dist);
     const segLen = cumDist[i+1] - cumDist[i];
     const t = segLen === 0 ? 0 : (dist - cumDist[i]) / segLen;
     const a = trackPoints[i], b = trackPoints[i+1];
@@ -545,8 +585,7 @@
     if(trackPoints.length < 2) return null;
     if(dist <= 0) return trackPoints[0].ele;
     if(dist >= totalDist) return trackPoints[trackPoints.length - 1].ele;
-    let i = 0;
-    while(cumDist[i+1] < dist) i++;
+    const i = segmentAtDistance(dist);
     const a = trackPoints[i], b = trackPoints[i+1];
     if(a.ele == null || b.ele == null) return null;
     const segLen = cumDist[i+1] - cumDist[i];
@@ -871,6 +910,113 @@
       hideBanner();
     }catch(err){
       showBanner('<strong>Route konnte nicht berechnet werden:</strong> ' + err.message);
+    }
+  }
+
+  // ---------- Search & load a known named route (Waymarked Trails cycling API) ----------
+  document.getElementById('namedRouteBtn').addEventListener('click', function(){
+    document.getElementById('routeSearchPanel').classList.add('show');
+    document.getElementById('routeSearchInput').focus();
+  });
+  document.getElementById('routeSearchCloseBtn').addEventListener('click', function(){
+    document.getElementById('routeSearchPanel').classList.remove('show');
+  });
+
+  let routeSearchTimer = null;
+  document.getElementById('routeSearchInput').addEventListener('input', function(){
+    clearTimeout(routeSearchTimer);
+    const query = this.value.trim();
+    const resultsEl = document.getElementById('routeSearchResults');
+    if(query.length < 3){ resultsEl.innerHTML = ''; return; }
+    routeSearchTimer = setTimeout(() => searchNamedRoutes(query), 400);
+  });
+
+  async function searchNamedRoutes(query){
+    const resultsEl = document.getElementById('routeSearchResults');
+    resultsEl.innerHTML = '<div class="route-search-status">Suche…</div>';
+    try{
+      const url = 'https://cycling.waymarkedtrails.org/api/v1/list/search?limit=8&query=' + encodeURIComponent(query);
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('Fehler ' + res.status);
+      const data = await res.json();
+      if(!data.results || data.results.length === 0){
+        resultsEl.innerHTML = '<div class="route-search-status">Keine Route gefunden.</div>';
+        return;
+      }
+      resultsEl.innerHTML = '';
+      data.results.forEach(r => {
+        const item = document.createElement('div');
+        item.className = 'route-search-item';
+        const via = Array.isArray(r.itinerary) && r.itinerary.length ? r.itinerary.join(' – ') : '';
+        item.innerHTML = '<span>' + r.name + (r.ref ? ' (' + r.ref + ')' : '') + '</span>' +
+          (via ? '<span>' + via + '</span>' : '');
+        item.addEventListener('click', () => loadNamedRoute(r.id, r.name));
+        resultsEl.appendChild(item);
+      });
+    }catch(err){
+      resultsEl.innerHTML = '<div class="route-search-status">Suche fehlgeschlagen: ' + err.message + '</div>';
+    }
+  }
+
+  // The API returns geometry in Web Mercator (EPSG:3857) meters, not lat/lon.
+  function webMercatorToLatLon(x, y){
+    const R = 6378137;
+    return {
+      lon: (x / R) * 180 / Math.PI,
+      lat: (2 * Math.atan(Math.exp(y / R)) - Math.PI / 2) * 180 / Math.PI
+    };
+  }
+
+  async function loadNamedRoute(id, name){
+    document.getElementById('routeSearchPanel').classList.remove('show');
+    showBanner('Route wird geladen…');
+    try{
+      const res = await fetch('https://cycling.waymarkedtrails.org/api/v1/details/relation/' + id);
+      if(!res.ok) throw new Error('Fehler ' + res.status);
+      const data = await res.json();
+
+      // The route tree mixes plain "linear" stretches with "split" sections (e.g. a
+      // separated one-way pair); we follow the "forward" side of any split. Long routes
+      // also get short, unrelated spur/alternate segments appended after the main line
+      // (confirmed against the real Ruhrtalradweg data — segments 17+ jumped ~118km back
+      // to the start). A real route can have legitimate gaps too (e.g. RS1's unfinished
+      // sections, up to ~17km in the current data), so we only cut once a gap is far
+      // beyond that — 30km comfortably separates "real gap" from "unrelated segment".
+      const MAX_GAP_M = 30000;
+      function collectSegmentCoords(seg, out){
+        if(!seg) return;
+        if(seg.route_type === 'linear' && seg.ways){
+          seg.ways.forEach(w => {
+            if(w.geometry && w.geometry.coordinates) out.push(...w.geometry.coordinates);
+          });
+        }else if(seg.route_type === 'split'){
+          (seg.forward || seg.backward || []).forEach(s => collectSegmentCoords(s, out));
+        }
+      }
+      const coords = [];
+      const mainSegs = (data.route && data.route.main) || [];
+      for(const seg of mainSegs){
+        const segCoords = [];
+        collectSegmentCoords(seg, segCoords);
+        if(segCoords.length === 0) continue;
+        if(coords.length > 0){
+          const prevLL = webMercatorToLatLon(...coords[coords.length - 1]);
+          const nextLL = webMercatorToLatLon(...segCoords[0]);
+          if(haversine(prevLL, nextLL) > MAX_GAP_M) break;
+        }
+        coords.push(...segCoords);
+      }
+      if(coords.length < 2) throw new Error('Keine Streckendaten für diese Route gefunden.');
+
+      const points = coords.map(([x, y]) => {
+        const ll = webMercatorToLatLon(x, y);
+        return { lat: ll.lat, lon: ll.lon, ele: null };
+      });
+      loadRoute(points, []);
+      document.getElementById('fileLabel').textContent = name;
+      hideBanner();
+    }catch(err){
+      showBanner('<strong>Route konnte nicht geladen werden:</strong> ' + err.message);
     }
   }
 
