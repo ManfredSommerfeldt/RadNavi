@@ -374,6 +374,7 @@
   let followMode = true;
   let lastFix = null;
   let lastZoomChange = 0;
+  let programmaticZoom = false; // true while WE change the view, so user zoom detection ignores it
 
   // voice-announcement state (reset per route)
   let voiceEnabled = true;
@@ -673,7 +674,9 @@
     const latlngs = trackPoints.map(p => [p.lat, p.lon]);
     routeLayer = L.polyline(latlngs, { color:'#4f9d69', weight:5, opacity:0.85 }).addTo(map);
     map.invalidateSize();
+    programmaticZoom = true;
     map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
+    programmaticZoom = false;
 
     waypoints.forEach(w => {
       const icon = L.divIcon({
@@ -726,12 +729,30 @@
   document.getElementById('followBtn').addEventListener('click', function(){
     followMode = !followMode;
     this.classList.toggle('active', followMode);
-    if(followMode && lastFix) map.setView([lastFix.lat, lastFix.lon], Math.max(map.getZoom(), 16));
+    if(followMode && lastFix){
+      programmaticZoom = true;
+      map.setView([lastFix.lat, lastFix.lon], Math.max(map.getZoom(), 16));
+      programmaticZoom = false;
+    }
   });
   document.getElementById('fitBtn').addEventListener('click', function(){
-    if(routeLayer) map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
+    if(routeLayer){
+      followMode = false;
+      document.getElementById('followBtn').classList.remove('active');
+      programmaticZoom = true;
+      map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
+      programmaticZoom = false;
+    }
   });
   map.on('dragstart', function(){
+    followMode = false;
+    document.getElementById('followBtn').classList.remove('active');
+  });
+  // Any manual zoom (pinch, scroll wheel, +/- buttons, double-click) stops auto-follow,
+  // so the speed-adaptive zoom doesn't snap back right after the user zoomed out.
+  // programmaticZoom distinguishes that from zoom changes we trigger ourselves.
+  map.on('zoomstart', function(){
+    if(programmaticZoom) return;
     followMode = false;
     document.getElementById('followBtn').classList.remove('active');
   });
@@ -833,7 +854,9 @@
       const targetZoom = computeNavZoom(kmh);
       const now2 = Date.now();
       if(Math.abs(targetZoom - map.getZoom()) >= 1 && now2 - lastZoomChange > 4000){
+        programmaticZoom = true;
         map.setView([p.lat, p.lon], targetZoom);
+        programmaticZoom = false;
         lastZoomChange = now2;
       }else{
         map.panTo([p.lat, p.lon]);
